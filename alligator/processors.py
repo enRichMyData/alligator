@@ -4,7 +4,7 @@ import traceback
 import pandas as pd
 
 from alligator.feature import map_nertype_to_numeric
-from alligator.fetchers import BowFetcher, CandidateFetcher
+from alligator.fetchers import CandidateFetcher
 from alligator.mongo import MongoWrapper
 
 
@@ -216,7 +216,7 @@ class RowBatchProcessor:
             row_hash,
         ) in row_data_list:
             # Gather all QIDs in this row
-            row_qids = self._collect_row_qids(ne_columns, row, candidates_results)
+            self._collect_row_qids(ne_columns, row, candidates_results)
 
             # Fetch BoW data if needed
             bow_data = {}
@@ -278,7 +278,7 @@ class RowBatchProcessor:
 
                     # Update features with BoW data
                     for cand in candidates:
-                        qid = cand["id"]
+                        cand["id"]
                         if cand.get("features"):
                             cand["features"]["column_NERtype"] = map_nertype_to_numeric(ner_type)
 

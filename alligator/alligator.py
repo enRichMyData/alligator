@@ -11,7 +11,7 @@ import pandas as pd
 from column_classifier import ColumnClassifier
 
 from alligator.feature import Feature
-from alligator.fetchers import BowFetcher, CandidateFetcher
+from alligator.fetchers import CandidateFetcher
 from alligator.ml import MLWorker
 from alligator.processors import RowBatchProcessor
 from alligator.typing import ColType

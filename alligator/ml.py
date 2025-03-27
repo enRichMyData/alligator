@@ -44,7 +44,7 @@ class MLWorker:
         self.top_n_for_type_freq: int = top_n_for_type_freq
         self.selected_features = features or DEFAULT_FEATURES
         self._db_name = kwargs.pop("db_name", "alligator_db")
-        self._mongo_uri = kwargs.pop("mongo_uri", "mongodb://mongodb:27017/")
+        self._mongo_uri = kwargs.pop("mongo_uri", "mongodb://gator-mongodb:27017/")
         self.input_collection = kwargs.get("input_collection", "input_data")
         self.error_logs_collection = kwargs.get("error_collection", "error_logs")
         self.mongo_wrapper: MongoWrapper = MongoWrapper(

@@ -22,7 +22,7 @@ class RowBatchProcessor:
         self.candidate_fetcher = candidate_fetcher
         self.max_candidates_in_result = max_candidates_in_result
         self._db_name = kwargs.get("db_name", "alligator_db")
-        self._mongo_uri = kwargs.get("mongo_uri", "mongodb://mongodb:27017")
+        self._mongo_uri = kwargs.get("mongo_uri", "mongodb://gator-mongodb:27017")
         self.input_collection = kwargs.get("input_collection", "input_data")
         self.mongo_wrapper = MongoWrapper(self._mongo_uri, self._db_name)
 
@@ -269,7 +269,6 @@ class RowBatchProcessor:
 
                     # Rank
                     max_training_candidates = len(candidates)
-                    # ranked_candidates = self.rank_with_feature_scoring(candidates)
                     ranked_candidates = candidates
                     ranked_candidates.sort(key=lambda x: x.get("score", 0.0), reverse=True)
 
@@ -292,32 +291,3 @@ class RowBatchProcessor:
                     training_candidates_by_ne_column[c] = training_candidates
 
         return training_candidates_by_ne_column
-
-    # --------------------------------------------------------------------------
-    # SCORING + TRAINING
-    # --------------------------------------------------------------------------
-    def score_candidate(self, candidate):
-        """
-        This used to be Alligator.score_candidate.
-        """
-        feat_names = [
-            "ed_score",
-            "jaccard_score",
-            "jaccardNgram_score",
-            "desc",
-            "descNgram",
-            "popularity",
-        ]
-        feats = []
-        if candidate.get("features"):
-            feats = [candidate["features"].get(fname, 0.0) for fname in feat_names]
-        total_score = sum(feats) / len(feats) if feats else 0.0
-        candidate["score"] = total_score
-        return candidate
-
-    def rank_with_feature_scoring(self, candidates):
-        """
-        This used to be Alligator.rank_with_feature_scoring.
-        """
-        scored_candidates = [self.score_candidate(c) for c in candidates]
-        return sorted(scored_candidates, key=lambda x: x["score"], reverse=True)

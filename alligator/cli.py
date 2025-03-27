@@ -14,7 +14,7 @@ def main():
         "--gator.mongo-uri",
         type=str,
         help="MongoDB connection URI",
-        default="mongodb://mongodb:27017",
+        default="mongodb://gator-mongodb:27017",
     )
     args = parser.parse_args()
 

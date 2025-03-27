@@ -30,7 +30,7 @@ class CandidateFetcher:
         self.num_candidates = num_candidates
         self.feature = feature
         self._db_name = kwargs.get("db_name", "alligator_db")
-        self._mongo_uri = kwargs.get("mongo_uri", "mongodb://mongodb:27017")
+        self._mongo_uri = kwargs.get("mongo_uri", "mongodb://gator-mongodb:27017")
         self.input_collection = kwargs.get("input_collection", "input_data")
         self.cache_collection = kwargs.get("cache_collection", "candidate_cache")
         self.mongo_wrapper = MongoWrapper(self._mongo_uri, self._db_name)

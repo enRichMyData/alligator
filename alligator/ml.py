@@ -158,6 +158,7 @@ class MLWorker:
         bulk_updates = []
         for doc_id, doc in docs_by_id.items():
             el_results = {}
+            candidates_to_save = {}
             candidates_by_column = doc["candidates"]
 
             for col_idx, cdict in score_map.get(doc_id, {}).items():
@@ -167,17 +168,18 @@ class MLWorker:
                     col_cands[c_idx]["score"] = scr
 
                 # Sort + slice top N
-                sorted_cands = sorted(col_cands, key=lambda x: x.get("score", 0.0), reverse=True)[
-                    : self.max_candidates_in_result
-                ]
-                el_results[col_idx] = sorted_cands
+                sorted_cands = sorted(col_cands, key=lambda x: x.get("score", 0.0), reverse=True)
+                if self.stage == "rerank" and self.max_candidates_in_result > 0:
+                    cands_to_save = sorted_cands[: self.max_candidates_in_result]
+                else:
+                    cands_to_save = sorted_cands
+                el_results[col_idx] = cands_to_save
+                candidates_to_save[col_idx] = sorted_cands
 
-            bulk_updates.append(
-                UpdateOne(
-                    {"_id": doc_id},
-                    {"$set": {"el_results": el_results, f"{self.stage}_status": "DONE"}},
-                )
-            )
+            set_query = {f"{self.stage}_status": "DONE", "candidates": candidates_to_save}
+            if self.stage == "rerank":
+                set_query["el_results"] = el_results
+            bulk_updates.append(UpdateOne({"_id": doc_id}, {"$set": set_query}))
 
         # 6) Bulk commit final results
         if bulk_updates:

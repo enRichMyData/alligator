@@ -116,7 +116,7 @@ def add_table(
     )
 
     # Trigger background task with classification passed to Alligator
-    def run_crocodile_task():
+    def run_alligator_task():
         gator = Alligator(
             input_csv=pd.DataFrame(table_upload.data),
             dataset_name=datasetName,
@@ -132,7 +132,7 @@ def add_table(
         )
         gator.run()
 
-    background_tasks.add_task(run_crocodile_task)
+    background_tasks.add_task(run_alligator_task)
 
     return {
         "message": "Table added successfully.",
@@ -213,7 +213,7 @@ def add_table_csv(
     )
 
     # Trigger background task with columns_type passed to Alligator
-    def run_crocodile_task():
+    def run_alligator_task():
         gator = Alligator(
             input_csv=df,
             dataset_name=datasetName,
@@ -229,7 +229,7 @@ def add_table_csv(
         )
         gator.run()
 
-    background_tasks.add_task(run_crocodile_task)
+    background_tasks.add_task(run_alligator_task)
 
     return {
         "message": "CSV table added successfully.",

@@ -73,7 +73,10 @@ class MLWorker:
 
         processed_count = 0
         while processed_count < total_docs:
-            print(f"ML ranking progress: {processed_count}/{total_docs} documents")
+            print(
+                f"ML ranking for stage {self.stage} progress: "
+                f"{processed_count}/{total_docs} documents"
+            )
 
             # Process a batch using the pre-computed global type frequencies
             docs_processed = self.apply_ml_ranking(model, global_type_counts)
@@ -85,7 +88,9 @@ class MLWorker:
                 if remaining == 0:
                     break
 
-        print(f"ML ranking complete: {processed_count}/{total_docs} documents")
+        print(
+            f"ML ranking for stage {self.stage} complete: {processed_count}/{total_docs} documents"
+        )
 
     def apply_ml_ranking(self, model: "Model", global_type_counts: Dict[Any, Counter] = {}) -> int:
         """Apply ML ranking using pre-computed global type frequencies"""

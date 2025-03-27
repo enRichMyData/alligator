@@ -4,7 +4,7 @@ from pymongo import ASCENDING, MongoClient  # added ASCENDING import
 
 
 def get_db():
-    client = MongoClient(os.getenv("MONGO_URI", "mongodb://localhost:27017"))
+    client = MongoClient(os.getenv("MONGO_URI", "mongodb://gator-mongodb:27017"))
     db = client["alligator_backend_db"]
 
     # Ensure indexes are created
@@ -18,7 +18,7 @@ def get_db():
 
 
 def get_alligator_db():
-    client = MongoClient(os.getenv("MONGO_URI", "mongodb://localhost:27017"))
+    client = MongoClient(os.getenv("MONGO_URI", "mongodb://gator-mongodb:27017"))
     db = client["alligator_db"]
     try:
         yield db

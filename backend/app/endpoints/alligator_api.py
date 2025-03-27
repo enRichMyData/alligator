@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 from bson import ObjectId
 from column_classifier import ColumnClassifier  # added global import
-from dependencies import get_crocodile_db, get_db
+from dependencies import get_alligator_db, get_db
 from endpoints.imdb_example import IMDB_EXAMPLE  # Example input
 from fastapi import (
     APIRouter,
@@ -321,7 +321,7 @@ def get_table(
     limit: int = Query(10),
     cursor: Optional[str] = Query(None),
     db: Database = Depends(get_db),
-    crocodile_db: Database = Depends(get_crocodile_db),
+    alligator_db: Database = Depends(get_alligator_db),
 ):
     """
     Get table data with keyset pagination, using ObjectId as the cursor.
@@ -349,7 +349,7 @@ def get_table(
             raise HTTPException(status_code=400, detail="Invalid cursor value")
 
     # Fetch rows from the Alligator-processed data
-    results = crocodile_db.input_data.find(query_filter).sort("_id", 1).limit(limit)
+    results = alligator_db.input_data.find(query_filter).sort("_id", 1).limit(limit)
     raw_rows = list(results)
 
     # Build a cleaned-up response with *all* candidates
@@ -419,7 +419,7 @@ def create_dataset(
 def delete_dataset(
     dataset_name: str,
     db: Database = Depends(get_db),
-    crocodile_db: Database = Depends(get_crocodile_db),
+    alligator_db: Database = Depends(get_alligator_db),
 ):
     """
     Delete a dataset by name.
@@ -435,7 +435,7 @@ def delete_dataset(
     # Delete dataset
     db.datasets.delete_one({"dataset_name": dataset_name})  # updated query key
 
-    # Optionally delete data from crocodile_db if needed
+    # Optionally delete data from alligator_db if needed
     return None
 
 
@@ -467,5 +467,5 @@ def delete_table(dataset_name: str, table_name: str, db: Database = Depends(get_
         {"name": dataset_name}, {"$inc": {"total_tables": -1, "total_rows": -row_count}}
     )
 
-    # Optionally delete data from crocodile_db if needed
+    # Optionally delete data from alligator_db if needed
     return None

@@ -5,7 +5,7 @@ COPY pyproject.toml .
 COPY ./alligator ./alligator
 
 # Install Python dependencies
-RUN pip install --no-cache-dir -e "."
+RUN PIP_DEFAULT_TIMEOUT=100 pip install --no-cache-dir -e "."
 
 # Download spaCy model
 RUN python -m spacy download en_core_web_sm && python -m spacy download en_core_web_trf

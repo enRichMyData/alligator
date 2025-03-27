@@ -21,7 +21,7 @@ class RowBatchProcessor:
     ):
         self.candidate_fetcher = candidate_fetcher
         self.max_candidates_in_result = max_candidates_in_result
-        self._db_name = kwargs.get("db_name", "crocodile_db")
+        self._db_name = kwargs.get("db_name", "alligator_db")
         self._mongo_uri = kwargs.get("mongo_uri", "mongodb://mongodb:27017")
         self.input_collection = kwargs.get("input_collection", "input_data")
         self.mongo_wrapper = MongoWrapper(self._mongo_uri, self._db_name)
@@ -171,7 +171,7 @@ class RowBatchProcessor:
         fuzzies_retry = []
         qids_retry = []
 
-        for ne_value, r_index, c_index, n_type in zip(
+        for ne_value, r_index, c_index in zip(
             all_entities_to_process, all_row_indices, all_col_indices
         ):
             candidates = candidates_results.get(ne_value, [])
@@ -214,7 +214,7 @@ class RowBatchProcessor:
             bow_data = {}
 
             # Build results
-            linked_entities, training_candidates = self._build_linked_entities_and_training(
+            training_candidates = self._build_linked_entities_and_training(
                 ne_columns, row, correct_qids, row_index, candidates_results, bow_data
             )
 
@@ -223,7 +223,6 @@ class RowBatchProcessor:
                 {"_id": doc_id},
                 {
                     "$set": {
-                        "el_results": linked_entities,
                         "candidates": training_candidates,  # Store training candidates here
                         "status": "DONE",
                         "rank_status": "TODO",
@@ -258,7 +257,6 @@ class RowBatchProcessor:
           - Insert correct candidate if missing
           - Return final top K + training slice
         """
-        linked_entities = {}
         training_candidates_by_ne_column = {}
 
         for c, ner_type in ne_columns.items():
@@ -290,13 +288,10 @@ class RowBatchProcessor:
                             ranked_candidates.sort(key=lambda x: x.get("score", 0.0), reverse=True)
 
                     # Slice final results
-                    el_results_candidates = ranked_candidates[: self.max_candidates_in_result]
                     training_candidates = ranked_candidates[:max_training_candidates]
-
-                    linked_entities[c] = el_results_candidates
                     training_candidates_by_ne_column[c] = training_candidates
 
-        return linked_entities, training_candidates_by_ne_column
+        return training_candidates_by_ne_column
 
     # --------------------------------------------------------------------------
     # SCORING + TRAINING

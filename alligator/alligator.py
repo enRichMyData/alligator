@@ -23,8 +23,8 @@ class Alligator:
     Alligator entity linking system with hidden MongoDB configuration.
     """
 
-    _DEFAULT_MONGO_URI = "mongodb://mongodb:27017/"  # Change this to a class-level default
-    _DB_NAME = "crocodile_db"
+    _DEFAULT_MONGO_URI = "mongodb://gator-mongodb:27017/"  # Change this to a class-level default
+    _DB_NAME = "alligator_db"
     _INPUT_COLLECTION = "input_data"
     _ERROR_LOG_COLLECTION = "error_logs"
     _CACHE_COLLECTION = "candidate_cache"
@@ -103,7 +103,6 @@ class Alligator:
         self._row_processor = RowBatchProcessor(
             self._candidate_fetcher,
             self.max_candidates_in_result,
-            None,
             db_name=self._DB_NAME,
             mongo_uri=self._mongo_uri,
             input_collection=self._INPUT_COLLECTION,
@@ -418,6 +417,7 @@ class Alligator:
             rank,
             table_name=self.table_name,
             dataset_name=self.dataset_name,
+            stage="rank",
             error_log_collection_name=self._ERROR_LOG_COLLECTION,
             input_collection=self._INPUT_COLLECTION,
             model_path=os.path.join(PROJECT_ROOT, "alligator", "models", "ranker.h5"),
@@ -427,7 +427,6 @@ class Alligator:
             features=self.feature.selected_features,
             mongo_uri=self._mongo_uri,
             db_name=self._DB_NAME,
-            initial_ranking=True,  # Flag to indicate this is the initial ranking
         )
         return worker.run()  # Initial ranking doesn't need global_type_counts
 
@@ -437,6 +436,7 @@ class Alligator:
             rank,
             table_name=self.table_name,
             dataset_name=self.dataset_name,
+            stage="rerank",
             error_log_collection_name=self._ERROR_LOG_COLLECTION,
             input_collection=self._INPUT_COLLECTION,
             model_path=os.path.join(PROJECT_ROOT, "alligator", "models", "reranker.h5"),

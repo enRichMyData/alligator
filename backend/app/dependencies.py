@@ -5,7 +5,7 @@ from pymongo import ASCENDING, MongoClient  # added ASCENDING import
 
 def get_db():
     client = MongoClient(os.getenv("MONGO_URI", "mongodb://localhost:27017"))
-    db = client["crocodile_backend_db"]
+    db = client["alligator_backend_db"]
 
     # Ensure indexes are created
     db.datasets.create_index([("dataset_name", ASCENDING)], unique=True)  # updated index field
@@ -17,11 +17,10 @@ def get_db():
         client.close()
 
 
-def get_crocodile_db():
+def get_alligator_db():
     client = MongoClient(os.getenv("MONGO_URI", "mongodb://localhost:27017"))
-    db = client["crocodile_db"]
+    db = client["alligator_db"]
     try:
         yield db
     finally:
-        pass
-        # client.close()
+        client.close()

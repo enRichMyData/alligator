@@ -1,5 +1,5 @@
 from config import settings
-from endpoints.crocodile_api import router
+from endpoints.alligator_api import router
 from fastapi import FastAPI
 
 app = FastAPI(title=settings.FASTAPI_APP_NAME, debug=settings.DEBUG)

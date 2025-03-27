@@ -12,7 +12,7 @@ COPY pyproject.toml .
 COPY ./alligator ./alligator
 
 # Install Python dependencies
-RUN pip install --no-cache-dir -e ".[app]"
+RUN PIP_DEFAULT_TIMEOUT=100 pip install --no-cache-dir -e ".[app]"
 
 # Expose the port that FastAPI will use
 EXPOSE 8000

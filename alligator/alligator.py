@@ -428,7 +428,7 @@ class Alligator:
             input_collection=self._INPUT_COLLECTION,
             model_path=os.path.join(PROJECT_ROOT, "alligator", "models", model_name),
             batch_size=self.batch_size,
-            max_candidates_in_result=self.max_candidates_in_result,
+            max_candidates_in_result=self.max_candidates_in_result if stage == "rerank" else -1,
             top_n_for_type_freq=self.top_n_for_type_freq,
             features=self.feature.selected_features,
             mongo_uri=self._mongo_uri,

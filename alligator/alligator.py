@@ -411,16 +411,22 @@ class Alligator:
         # Report progress
         print(f"Processed {processed_count}/{total_docs} rows...")
 
-    def ranker_worker(self, rank: int):
-        """Wrapper function to create and run an MLWorker for initial ranking with ranker.h5"""
+    def ml_worker(
+        self,
+        rank: int,
+        stage: str = "rank",
+        model_name: str = "ranker.h5",
+        global_type_counts: Dict[Any, Counter] = None,
+    ):
+        """Unified wrapper function for ML workers"""
         worker = MLWorker(
             rank,
             table_name=self.table_name,
             dataset_name=self.dataset_name,
-            stage="rank",
+            stage=stage,
             error_log_collection_name=self._ERROR_LOG_COLLECTION,
             input_collection=self._INPUT_COLLECTION,
-            model_path=os.path.join(PROJECT_ROOT, "alligator", "models", "ranker.h5"),
+            model_path=os.path.join(PROJECT_ROOT, "alligator", "models", model_name),
             batch_size=self.batch_size,
             max_candidates_in_result=self.max_candidates_in_result,
             top_n_for_type_freq=self.top_n_for_type_freq,
@@ -428,26 +434,7 @@ class Alligator:
             mongo_uri=self._mongo_uri,
             db_name=self._DB_NAME,
         )
-        return worker.run()  # Initial ranking doesn't need global_type_counts
-
-    def reranker_worker(self, rank: int, global_type_counts: Dict[Any, Counter]):
-        """Wrapper function to create and run an MLWorker with the correct parameters"""
-        worker = MLWorker(
-            rank,
-            table_name=self.table_name,
-            dataset_name=self.dataset_name,
-            stage="rerank",
-            error_log_collection_name=self._ERROR_LOG_COLLECTION,
-            input_collection=self._INPUT_COLLECTION,
-            model_path=os.path.join(PROJECT_ROOT, "alligator", "models", "reranker.h5"),
-            batch_size=self.batch_size,
-            max_candidates_in_result=self.max_candidates_in_result,
-            top_n_for_type_freq=self.top_n_for_type_freq,
-            features=self.feature.selected_features,
-            mongo_uri=self._mongo_uri,
-            db_name=self._DB_NAME,
-        )
-        return worker.run(global_type_counts=global_type_counts)  # Call run directly
+        return worker.run(global_type_counts=global_type_counts)
 
     def worker(self, rank: int):
         db = self.get_db()
@@ -478,18 +465,31 @@ class Alligator:
             pool.map(self.worker, range(self.max_workers))
 
         with mp.Pool(processes=self.ml_ranking_workers) as pool:
-            pool.map(self.ranker_worker, range(self.ml_ranking_workers))
+            pool.map(
+                partial(
+                    self.ml_worker,
+                    stage="rank",
+                    model_name="ranker.h5",
+                    global_type_counts={},
+                ),
+                range(self.ml_ranking_workers),
+            )
 
         global_type_counts = self.feature.compute_global_type_frequencies(
             docs_to_process=0.7, random_sample=True
         )
 
         with mp.Pool(processes=self.ml_ranking_workers) as pool:
-            worker = partial(self.reranker_worker, global_type_counts=global_type_counts)
-            pool.map(worker, range(self.ml_ranking_workers))
+            pool.map(
+                partial(
+                    self.ml_worker,
+                    stage="rerank",
+                    model_name="reranker.h5",
+                    global_type_counts=global_type_counts,
+                ),
+                range(self.ml_ranking_workers),
+            )
 
-        # self.close_mongo_connection()
         print("All tasks have been processed.")
-
         extracted_rows = self.fetch_results()
         return extracted_rows

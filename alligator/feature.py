@@ -210,6 +210,7 @@ class Feature:
             candidates_by_column: Dict[Any, List[Dict[str, Any]]] = doc["candidates"]
 
             for col_index, candidates in candidates_by_column.items():
+                candidates = sorted(candidates, key=lambda x: x.get("score", 0.0), reverse=True)
                 top_candidates = candidates[: self.top_n_for_type_freq]
                 row_qids = set()
 

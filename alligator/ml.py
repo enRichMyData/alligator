@@ -21,6 +21,7 @@ class MLWorker:
         worker_id: int,
         table_name: str,
         dataset_name: str,
+        stage: str,
         model_path: str | None = None,
         batch_size: int = 100,
         max_candidates_in_result: int = 5,
@@ -29,8 +30,12 @@ class MLWorker:
         **kwargs,
     ) -> None:
         super(MLWorker, self).__init__()
+        self.woerker_id = worker_id
         self.table_name = table_name
         self.dataset_name = dataset_name
+        if stage.lower() not in {"rank", "rerank"}:
+            raise ValueError(f"Invalid stage: {stage}. Possible values are: 'rank', 'rerank'")
+        self.stage = stage
         self.model_path: str = model_path or os.path.join(
             PROJECT_ROOT, "alligator", "models", "default.h5"
         )
@@ -57,22 +62,14 @@ class MLWorker:
 
         return load_model(self.model_path)
 
-    def run(self, global_type_counts: Dict[Any, Counter]) -> None:
+    def run(self, global_type_counts: Dict[Any, Counter] = {}) -> None:
         """Process candidates directly from input_collection"""
         db: Database = self.get_db()
         model: "Model" = self.load_ml_model()
         input_collection: Collection = db[self.input_collection]
 
         # Now proceed with processing documents in batches
-        total_docs = self.mongo_wrapper.count_documents(
-            input_collection,
-            {
-                "dataset_name": self.dataset_name,
-                "table_name": self.table_name,
-                "status": "DONE",
-                "ml_status": "TODO",
-            },
-        )
+        total_docs = self.mongo_wrapper.count_documents(input_collection, self._get_query())
 
         processed_count = 0
         while processed_count < total_docs:
@@ -84,21 +81,13 @@ class MLWorker:
 
             # If no documents processed, check if there are any left
             if docs_processed == 0:
-                remaining = self.mongo_wrapper.count_documents(
-                    input_collection,
-                    {
-                        "dataset_name": self.dataset_name,
-                        "table_name": self.table_name,
-                        "status": "DONE",
-                        "ml_status": "TODO",
-                    },
-                )
+                remaining = self.mongo_wrapper.count_documents(input_collection, self._get_query())
                 if remaining == 0:
                     break
 
         print(f"ML ranking complete: {processed_count}/{total_docs} documents")
 
-    def apply_ml_ranking(self, model: "Model", global_type_counts: Dict[Any, Counter]) -> int:
+    def apply_ml_ranking(self, model: "Model", global_type_counts: Dict[Any, Counter] = {}) -> int:
         """Apply ML ranking using pre-computed global type frequencies"""
         db: Database = self.get_db()
         input_collection: Collection = db[self.input_collection]
@@ -107,13 +96,8 @@ class MLWorker:
         batch_docs = []
         for _ in range(self.batch_size):
             doc = input_collection.find_one_and_update(
-                {
-                    "dataset_name": self.dataset_name,
-                    "table_name": self.table_name,
-                    "status": "DONE",
-                    "ml_status": "TODO",
-                },
-                {"$set": {"ml_status": "DOING"}},
+                self._get_query(),
+                {"$set": {f"{self.stage}_status": "DOING"}},
                 projection={"_id": 1, "row_id": 1, "candidates": 1},
             )
             if doc is None:
@@ -186,7 +170,7 @@ class MLWorker:
             bulk_updates.append(
                 UpdateOne(
                     {"_id": doc_id},
-                    {"$set": {"el_results": el_results, "ml_status": "DONE"}},
+                    {"$set": {"el_results": el_results, f"{self.stage}_status": "DONE"}},
                 )
             )
 
@@ -195,6 +179,18 @@ class MLWorker:
             input_collection.bulk_write(bulk_updates)
 
         return len(batch_docs)
+
+    def _get_query(self) -> Dict[str, Any]:
+        query = {
+            "dataset_name": self.dataset_name,
+            "table_name": self.table_name,
+            "status": "DONE",
+        }
+        if self.stage == "rank":
+            query["rank_status"] = "TODO"
+        else:
+            query["rerank_status"] = "TODO"
+        return query
 
     def extract_features(self, candidate: Dict[str, Any]) -> List[float]:
         """Extract features as in the original system"""

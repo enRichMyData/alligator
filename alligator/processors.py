@@ -226,7 +226,8 @@ class RowBatchProcessor:
                         "el_results": linked_entities,
                         "candidates": training_candidates,  # Store training candidates here
                         "status": "DONE",
-                        "ml_status": "TODO",
+                        "rank_status": "TODO",
+                        "rerank_status": "TODO",
                     }
                 },
             )
@@ -270,7 +271,8 @@ class RowBatchProcessor:
 
                     # Rank
                     max_training_candidates = len(candidates)
-                    ranked_candidates = self.rank_with_feature_scoring(candidates)
+                    # ranked_candidates = self.rank_with_feature_scoring(candidates)
+                    ranked_candidates = candidates
                     ranked_candidates.sort(key=lambda x: x.get("score", 0.0), reverse=True)
 
                     # If correct QID is missing in top training slice, insert it

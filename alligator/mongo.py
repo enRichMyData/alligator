@@ -176,12 +176,14 @@ class MongoWrapper:
             unique=True,
         )
         input_collection.create_index([("status", ASCENDING)])
-        input_collection.create_index([("ml_status", ASCENDING)])
+        input_collection.create_index([("rank_status", ASCENDING)])
+        input_collection.create_index([("rerank_status", ASCENDING)])
         input_collection.create_index(
             [
                 ("dataset_name", ASCENDING),
                 ("table_name", ASCENDING),
                 ("status", ASCENDING),
-                ("ml_status", ASCENDING),
+                ("rank_status", ASCENDING),
+                ("rerank_status", ASCENDING),
             ]
         )

@@ -42,7 +42,8 @@ class Alligator:
         entity_retrieval_token: Optional[str] = None,
         selected_features: Optional[List[str]] = None,
         candidate_retrieval_limit: int = 16,
-        model_path: Optional[str] = None,
+        ranker_model_path: Optional[str] = None,
+        reranker_model_path: Optional[str] = None,
         batch_size: int = 1024,
         ml_ranking_workers: int = 2,
         top_n_for_type_freq: int = 3,
@@ -70,7 +71,12 @@ class Alligator:
         self.entity_retrieval_endpoint = entity_retrieval_endpoint
         self.entity_retrieval_token = entity_retrieval_token
         self.candidate_retrieval_limit = candidate_retrieval_limit
-        self.model_path = model_path
+        self.ranker_model_path = ranker_model_path or os.path.join(
+            PROJECT_ROOT, "alligator", "models", "ranker.h5"
+        )
+        self.reranker_model_path = reranker_model_path or os.path.join(
+            PROJECT_ROOT, "alligator", "models", "reranker.h5"
+        )
         self.batch_size = batch_size
         self.ml_ranking_workers = ml_ranking_workers
         self.top_n_for_type_freq = top_n_for_type_freq
@@ -415,7 +421,6 @@ class Alligator:
         self,
         rank: int,
         stage: str = "rank",
-        model_name: str = "ranker.h5",
         global_type_counts: Dict[Any, Counter] = None,
     ):
         """Unified wrapper function for ML workers"""
@@ -426,7 +431,7 @@ class Alligator:
             stage=stage,
             error_log_collection_name=self._ERROR_LOG_COLLECTION,
             input_collection=self._INPUT_COLLECTION,
-            model_path=os.path.join(PROJECT_ROOT, "alligator", "models", model_name),
+            model_path=self.ranker_model_path if stage == "rank" else self.reranker_model_path,
             batch_size=self.batch_size,
             max_candidates_in_result=self.max_candidates_in_result if stage == "rerank" else -1,
             top_n_for_type_freq=self.top_n_for_type_freq,
@@ -469,7 +474,6 @@ class Alligator:
                 partial(
                     self.ml_worker,
                     stage="rank",
-                    model_name="ranker.h5",
                     global_type_counts={},
                 ),
                 range(self.ml_ranking_workers),
@@ -484,7 +488,6 @@ class Alligator:
                 partial(
                     self.ml_worker,
                     stage="rerank",
-                    model_name="reranker.h5",
                     global_type_counts=global_type_counts,
                 ),
                 range(self.ml_ranking_workers),

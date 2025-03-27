@@ -3,7 +3,6 @@ import traceback
 
 import pandas as pd
 
-from alligator.feature import map_nertype_to_numeric
 from alligator.fetchers import CandidateFetcher
 from alligator.mongo import MongoWrapper
 
@@ -40,7 +39,6 @@ class RowBatchProcessor:
           1) Collect all entities from the batch for candidate fetching.
           2) Fetch initial candidates (batch).
           3) Attempt fuzzy retry if needed.
-          4) Process each row individually, fetching BoW data as needed.
           5) Save results and update DB.
         """
         db = self.get_db()
@@ -54,7 +52,6 @@ class RowBatchProcessor:
                 row_data_list,
                 all_row_indices,
                 all_col_indices,
-                all_ner_types,
             ) = self._collect_batch_info(docs)
 
             # 2) Fetch initial candidates in one batch
@@ -65,7 +62,6 @@ class RowBatchProcessor:
                 all_qids,
                 all_row_indices,
                 all_col_indices,
-                all_ner_types,
             )
 
             # 3) Process each row (BoW fetch, final ranking, DB update)
@@ -90,7 +86,6 @@ class RowBatchProcessor:
         all_qids = []
         all_row_indices = []
         all_col_indices = []
-        all_ner_types = []
         row_data_list = []
 
         for doc in docs:
@@ -138,7 +133,6 @@ class RowBatchProcessor:
                         all_qids.append(correct_qid)
                         all_row_indices.append(row_index)
                         all_col_indices.append(c)
-                        all_ner_types.append(ner_type)
 
         return (
             all_entities_to_process,
@@ -148,7 +142,6 @@ class RowBatchProcessor:
             row_data_list,
             all_row_indices,
             all_col_indices,
-            all_ner_types,
         )
 
     # --------------------------------------------------------------------------
@@ -162,7 +155,6 @@ class RowBatchProcessor:
         all_qids,
         all_row_indices,
         all_col_indices,
-        all_ner_types,
     ):
         """
         Performs the initial batch fetch of candidates, then does fuzzy retry
@@ -180,7 +172,7 @@ class RowBatchProcessor:
         qids_retry = []
 
         for ne_value, r_index, c_index, n_type in zip(
-            all_entities_to_process, all_row_indices, all_col_indices, all_ner_types
+            all_entities_to_process, all_row_indices, all_col_indices
         ):
             candidates = candidates_results.get(ne_value, [])
             if len(candidates) <= 1:
@@ -260,7 +252,7 @@ class RowBatchProcessor:
     ):
         """
         For each NE column in the row:
-          - Insert bow_similarity and column_NERtype features
+          - Insert column_NERtype features
           - Rank candidates
           - Insert correct candidate if missing
           - Return final top K + training slice
@@ -275,12 +267,6 @@ class RowBatchProcessor:
                 if ne_value and pd.notna(ne_value):
                     ne_value = str(ne_value).strip().replace("_", " ").lower()
                     candidates = candidates_results.get(ne_value, [])
-
-                    # Update features with BoW data
-                    for cand in candidates:
-                        cand["id"]
-                        if cand.get("features"):
-                            cand["features"]["column_NERtype"] = map_nertype_to_numeric(ner_type)
 
                     # Rank
                     max_training_candidates = len(candidates)
@@ -323,7 +309,6 @@ class RowBatchProcessor:
             "jaccardNgram_score",
             "desc",
             "descNgram",
-            "bow_similarity",
             "popularity",
         ]
         feats = []

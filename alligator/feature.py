@@ -40,20 +40,6 @@ DEFAULT_FEATURES = [
 ]
 
 
-def map_nertype_to_numeric(nertype: str) -> int:
-    mapping: Dict[str, int] = {
-        "LOCATION": 1,
-        "LOC": 1,
-        "ORGANIZATION": 2,
-        "ORG": 2,
-        "PERSON": 3,
-        "PERS": 3,
-        "OTHER": 4,
-        "OTHERS": 4,
-    }
-    return mapping.get(nertype, 4)
-
-
 class Feature:
     def __init__(
         self,
@@ -118,9 +104,6 @@ class Feature:
                 candidate_description if candidate_description is not None else ""
             )
 
-            kind_numeric: int = self.map_kind_to_numeric(candidate.get("kind", "entity"))
-            nertype_numeric: int = map_nertype_to_numeric(candidate.get("NERtype", "OTHERS"))
-
             desc: float = 0.0
             descNgram: float = 0.0
             if safe_candidate_description:
@@ -142,10 +125,6 @@ class Feature:
                 "jaccardNgram_score": candidate.get("jaccardNgram_score", 0.0),
                 "desc": desc,
                 "descNgram": descNgram,
-                "bow_similarity": 0.0,
-                "kind": kind_numeric,
-                "NERtype": nertype_numeric,
-                "column_NERtype": None,  # Placeholder it will be filled later
             }
 
             # Preserve the original candidate values, even if they are None

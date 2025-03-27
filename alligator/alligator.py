@@ -27,7 +27,6 @@ class Alligator:
     _INPUT_COLLECTION = "input_data"
     _ERROR_LOG_COLLECTION = "error_logs"
     _CACHE_COLLECTION = "candidate_cache"
-    _BOW_CACHE_COLLECTION = "bow_cache"
 
     def __init__(
         self,

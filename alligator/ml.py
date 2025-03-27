@@ -30,7 +30,7 @@ class MLWorker:
         **kwargs,
     ) -> None:
         super(MLWorker, self).__init__()
-        self.woerker_id = worker_id
+        self.worker_id = worker_id
         self.table_name = table_name
         self.dataset_name = dataset_name
         if stage.lower() not in {"rank", "rerank"}:

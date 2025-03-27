@@ -168,3 +168,6 @@ class CandidateFetcher:
         for entity_name, candidates in results.items():
             results[entity_name] = [c for c in candidates if not c.get("is_placeholder", False)]
         return results
+
+
+# TODO (@roby-avo): Add classes to retrieve objects and literals from LamAPI

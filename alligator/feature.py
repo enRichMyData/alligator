@@ -116,39 +116,45 @@ class Feature:
 
             # Initialize all default features with default values
             features: Dict[str, Any] = {feature: 0.0 for feature in DEFAULT_FEATURES}
-            
+
             # Now set the calculated values in the same order as DEFAULT_FEATURES
-            features.update({
-                "ambiguity_mention": candidate.get("ambiguity_mention", 0.0),
-                "ncorrects_tokens": candidate.get("ncorrects_tokens", 0.0),
-                "ntoken_mention": candidate.get("ntoken_mention", len(safe_entity_name.split())),
-                "ntoken_entity": candidate.get("ntoken_entity", len(safe_candidate_name.split())),
-                "length_mention": len(safe_entity_name),
-                "length_entity": len(safe_candidate_name),
-                "popularity": candidate.get("popularity", 0.0),
-                "pos_score": candidate.get("pos_score", 0.0),
-                "es_score": candidate.get("es_score", 0.0),
-                "ed_score": candidate.get("ed_score", 0.0),
-                "jaccard_score": candidate.get("jaccard_score", 0.0),
-                "jaccardNgram_score": candidate.get("jaccardNgram_score", 0.0),
-                "p_subj_ne": candidate.get("p_subj_ne", 0.0),
-                "p_subj_lit_datatype": candidate.get("p_subj_lit_datatype", 0.0),
-                "p_subj_lit_all_datatype": candidate.get("p_subj_lit_all_datatype", 0.0),
-                "p_subj_lit_row": candidate.get("p_subj_lit_row", 0.0),
-                "p_obj_ne": candidate.get("p_obj_ne", 0.0),
-                "desc": desc,
-                "descNgram": descNgram,
-                "cta_t1": candidate.get("cta_t1", 0.0),
-                "cta_t2": candidate.get("cta_t2", 0.0),
-                "cta_t3": candidate.get("cta_t3", 0.0),
-                "cta_t4": candidate.get("cta_t4", 0.0),
-                "cta_t5": candidate.get("cta_t5", 0.0),
-                "cpa_t1": candidate.get("cpa_t1", 0.0),
-                "cpa_t2": candidate.get("cpa_t2", 0.0),
-                "cpa_t3": candidate.get("cpa_t3", 0.0),
-                "cpa_t4": candidate.get("cpa_t4", 0.0),
-                "cpa_t5": candidate.get("cpa_t5", 0.0),
-            })
+            features.update(
+                {
+                    "ambiguity_mention": candidate.get("ambiguity_mention", 0.0),
+                    "ncorrects_tokens": candidate.get("ncorrects_tokens", 0.0),
+                    "ntoken_mention": candidate.get(
+                        "ntoken_mention", len(safe_entity_name.split())
+                    ),
+                    "ntoken_entity": candidate.get(
+                        "ntoken_entity", len(safe_candidate_name.split())
+                    ),
+                    "length_mention": len(safe_entity_name),
+                    "length_entity": len(safe_candidate_name),
+                    "popularity": candidate.get("popularity", 0.0),
+                    "pos_score": candidate.get("pos_score", 0.0),
+                    "es_score": candidate.get("es_score", 0.0),
+                    "ed_score": candidate.get("ed_score", 0.0),
+                    "jaccard_score": candidate.get("jaccard_score", 0.0),
+                    "jaccardNgram_score": candidate.get("jaccardNgram_score", 0.0),
+                    "p_subj_ne": candidate.get("p_subj_ne", 0.0),
+                    "p_subj_lit_datatype": candidate.get("p_subj_lit_datatype", 0.0),
+                    "p_subj_lit_all_datatype": candidate.get("p_subj_lit_all_datatype", 0.0),
+                    "p_subj_lit_row": candidate.get("p_subj_lit_row", 0.0),
+                    "p_obj_ne": candidate.get("p_obj_ne", 0.0),
+                    "desc": desc,
+                    "descNgram": descNgram,
+                    "cta_t1": candidate.get("cta_t1", 0.0),
+                    "cta_t2": candidate.get("cta_t2", 0.0),
+                    "cta_t3": candidate.get("cta_t3", 0.0),
+                    "cta_t4": candidate.get("cta_t4", 0.0),
+                    "cta_t5": candidate.get("cta_t5", 0.0),
+                    "cpa_t1": candidate.get("cpa_t1", 0.0),
+                    "cpa_t2": candidate.get("cpa_t2", 0.0),
+                    "cpa_t3": candidate.get("cpa_t3", 0.0),
+                    "cpa_t4": candidate.get("cpa_t4", 0.0),
+                    "cpa_t5": candidate.get("cpa_t5", 0.0),
+                }
+            )
 
             # Preserve the original candidate values, even if they are None
             processed_candidates.append(

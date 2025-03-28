@@ -12,8 +12,7 @@ from column_classifier import ColumnClassifier
 
 from alligator import PROJECT_ROOT
 from alligator.feature import Feature
-
-from alligator.fetchers import CandidateFetcher, ObjectFetcher, LiteralFetcher
+from alligator.fetchers import CandidateFetcher, LiteralFetcher, ObjectFetcher
 from alligator.ml import MLWorker
 from alligator.processors import RowBatchProcessor
 from alligator.typing import ColType
@@ -113,7 +112,7 @@ class Alligator:
             input_collection=self._INPUT_COLLECTION,
             cache_collection=self._CACHE_COLLECTION,
         )
-        
+
         # Create optional object and literal fetchers if endpoints provided
         object_fetcher = None
         literal_fetcher = None
@@ -125,7 +124,7 @@ class Alligator:
                 mongo_uri=self._mongo_uri,
                 cache_collection=self._OBJECT_CACHE_COLLECTION,
             )
-        
+
         if self.literal_retrieval_endpoint and self.entity_retrieval_token:
             literal_fetcher = LiteralFetcher(
                 self.literal_retrieval_endpoint,
@@ -134,7 +133,7 @@ class Alligator:
                 mongo_uri=self._mongo_uri,
                 cache_collection=self._LITERAL_CACHE_COLLECTION,
             )
-            
+
         self._row_processor = RowBatchProcessor(
             self._candidate_fetcher,
             object_fetcher,

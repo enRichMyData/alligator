@@ -52,7 +52,7 @@ class MLWorker:
             self._db_name,
             error_log_collection_name=self.error_logs_collection,
         )
-        
+
     def get_db(self) -> Database:
         client = MongoConnectionManager.get_client(self._mongo_uri)
         return client[self._db_name]

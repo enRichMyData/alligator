@@ -174,6 +174,7 @@ class ObjectFetcher:
     """
     Fetcher for retrieving object information from LAMAPI.
     """
+
     def __init__(self, endpoint: str, token: str, **kwargs):
         self.endpoint = endpoint
         self.token = token
@@ -196,25 +197,25 @@ class ObjectFetcher:
         """Fetch objects for a list of entity IDs."""
         if not entity_ids:
             return {}
-        
+
         # Filter out already cached IDs
         cache = self.get_object_cache()
         to_fetch = []
         results = {}
-        
+
         for entity_id in entity_ids:
             cached_result = cache.get(entity_id)
             if cached_result is not None:
                 results[entity_id] = cached_result
             else:
                 to_fetch.append(entity_id)
-                
+
         if not to_fetch:
             return results
-            
+
         # Prepare batch request for non-cached IDs
         url = f"{self.endpoint}?token={self.token}"
-        
+
         async with aiohttp.ClientSession(
             timeout=MY_TIMEOUT, connector=aiohttp.TCPConnector(ssl=False, limit=10)
         ) as session:
@@ -226,25 +227,25 @@ class ObjectFetcher:
                     async with session.post(url, json=request_data) as response:
                         response.raise_for_status()
                         data = await response.json()
-                        
+
                         # Update cache and results
                         for entity_id, objects_data in data.items():
                             cache.put(entity_id, objects_data)
                             results[entity_id] = objects_data
-                        
+
                         return results
-                        
+
                 except Exception:
                     if attempts == 4:
                         self.mongo_wrapper.log_to_db(
                             "FETCH_OBJECTS_ERROR",
-                            f"Error fetching objects for entities",
+                            "Error fetching objects for entities",
                             traceback.format_exc(),
                             attempt=attempts + 1,
                         )
                     await asyncio.sleep(backoff)
                     backoff = min(backoff * 2, 16)
-        
+
         # If all attempts fail, return what we have
         return results
 
@@ -253,6 +254,7 @@ class LiteralFetcher:
     """
     Fetcher for retrieving literal information from LAMAPI.
     """
+
     def __init__(self, endpoint: str, token: str, **kwargs):
         self.endpoint = endpoint
         self.token = token
@@ -275,25 +277,25 @@ class LiteralFetcher:
         """Fetch literals for a list of entity IDs."""
         if not entity_ids:
             return {}
-        
+
         # Filter out already cached IDs
         cache = self.get_literal_cache()
         to_fetch = []
         results = {}
-        
+
         for entity_id in entity_ids:
             cached_result = cache.get(entity_id)
             if cached_result is not None:
                 results[entity_id] = cached_result
             else:
                 to_fetch.append(entity_id)
-        
+
         if not to_fetch:
             return results
-            
+
         # Prepare batch request for non-cached IDs
         url = f"{self.endpoint}?token={self.token}"
-        
+
         async with aiohttp.ClientSession(
             timeout=MY_TIMEOUT, connector=aiohttp.TCPConnector(ssl=False, limit=10)
         ) as session:
@@ -305,24 +307,24 @@ class LiteralFetcher:
                     async with session.post(url, json=request_data) as response:
                         response.raise_for_status()
                         data = await response.json()
-                        
+
                         # Update cache and results
                         for entity_id, literals_data in data.items():
                             cache.put(entity_id, literals_data)
                             results[entity_id] = literals_data
-                        
+
                         return results
-                        
+
                 except Exception:
                     if attempts == 4:
                         self.mongo_wrapper.log_to_db(
                             "FETCH_LITERALS_ERROR",
-                            f"Error fetching literals for entities",
+                            "Error fetching literals for entities",
                             traceback.format_exc(),
                             attempt=attempts + 1,
                         )
                     await asyncio.sleep(backoff)
                     backoff = min(backoff * 2, 16)
-        
+
         # If all attempts fail, return what we have
         return results

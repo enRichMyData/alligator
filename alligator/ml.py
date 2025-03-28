@@ -52,7 +52,7 @@ class MLWorker:
             self._db_name,
             error_log_collection_name=self.error_logs_collection,
         )
-
+        
     def get_db(self) -> Database:
         client = MongoConnectionManager.get_client(self._mongo_uri)
         return client[self._db_name]
@@ -127,7 +127,7 @@ class MLWorker:
 
                     # Assign typeFreq1..typeFreq5
                     for i in range(1, 6):
-                        cand_feats[f"typeFreq{i}"] = (
+                        cand_feats[f"cta_t{i}"] = (
                             freq_list[i - 1] if (i - 1) < len(freq_list) else 0.0
                         )
 

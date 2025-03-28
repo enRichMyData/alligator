@@ -12,7 +12,8 @@ from column_classifier import ColumnClassifier
 
 from alligator import PROJECT_ROOT
 from alligator.feature import Feature
-from alligator.fetchers import CandidateFetcher
+
+from alligator.fetchers import CandidateFetcher, ObjectFetcher, LiteralFetcher
 from alligator.ml import MLWorker
 from alligator.processors import RowBatchProcessor
 from alligator.typing import ColType
@@ -28,6 +29,8 @@ class Alligator:
     _INPUT_COLLECTION = "input_data"
     _ERROR_LOG_COLLECTION = "error_logs"
     _CACHE_COLLECTION = "candidate_cache"
+    _OBJECT_CACHE_COLLECTION = "object_cache"
+    _LITERAL_CACHE_COLLECTION = "literal_cache"
 
     def __init__(
         self,
@@ -40,6 +43,8 @@ class Alligator:
         max_candidates_in_result: int = 5,
         entity_retrieval_endpoint: Optional[str] = None,
         entity_retrieval_token: Optional[str] = None,
+        object_retrieval_endpoint: Optional[str] = None,
+        literal_retrieval_endpoint: Optional[str] = None,
         selected_features: Optional[List[str]] = None,
         candidate_retrieval_limit: int = 16,
         ranker_model_path: Optional[str] = None,
@@ -70,6 +75,8 @@ class Alligator:
         self.max_candidates_in_result = max_candidates_in_result
         self.entity_retrieval_endpoint = entity_retrieval_endpoint
         self.entity_retrieval_token = entity_retrieval_token
+        self.object_retrieval_endpoint = object_retrieval_endpoint
+        self.literal_retrieval_endpoint = literal_retrieval_endpoint
         self.candidate_retrieval_limit = candidate_retrieval_limit
         self.ranker_model_path = ranker_model_path or os.path.join(
             PROJECT_ROOT, "alligator", "models", "ranker.h5"
@@ -106,8 +113,32 @@ class Alligator:
             input_collection=self._INPUT_COLLECTION,
             cache_collection=self._CACHE_COLLECTION,
         )
+        
+        # Create optional object and literal fetchers if endpoints provided
+        object_fetcher = None
+        literal_fetcher = None
+        if self.object_retrieval_endpoint and self.entity_retrieval_token:
+            object_fetcher = ObjectFetcher(
+                self.object_retrieval_endpoint,
+                self.entity_retrieval_token,
+                db_name=self._DB_NAME,
+                mongo_uri=self._mongo_uri,
+                cache_collection=self._OBJECT_CACHE_COLLECTION,
+            )
+        
+        if self.literal_retrieval_endpoint and self.entity_retrieval_token:
+            literal_fetcher = LiteralFetcher(
+                self.literal_retrieval_endpoint,
+                self.entity_retrieval_token,
+                db_name=self._DB_NAME,
+                mongo_uri=self._mongo_uri,
+                cache_collection=self._LITERAL_CACHE_COLLECTION,
+            )
+            
         self._row_processor = RowBatchProcessor(
             self._candidate_fetcher,
+            object_fetcher,
+            literal_fetcher,
             self.max_candidates_in_result,
             db_name=self._DB_NAME,
             mongo_uri=self._mongo_uri,

@@ -127,7 +127,7 @@ class MLWorker:
 
                     # Assign typeFreq1..typeFreq5
                     for i in range(1, 6):
-                        cand_feats[f"typeFreq{i}"] = (
+                        cand_feats[f"cta_t{i}"] = (
                             freq_list[i - 1] if (i - 1) < len(freq_list) else 0.0
                         )
 

@@ -36,7 +36,13 @@ First, create a `.env` file with the required environment variables:
 
 ```ini
 ENTITY_RETRIEVAL_ENDPOINT=https://lamapi.hel.sintef.cloud/lookup/entity-retrieval
+OBJECT_RETRIEVAL_ENDPOINT=https://lamapi.hel.sintef.cloud/entity/objects
+LITERAL_RETRIEVAL_ENDPOINT=https://lamapi.hel.sintef.cloud/entity/literals
 ENTITY_RETRIEVAL_TOKEN=lamapi_demo_2023
+MONGO_SERVER_PORT=27017
+JUPYTER_SERVER_PORT=8888
+MONGO_VERSION=7.0
+COMPOSE_BAKE=true
 ```
 
 Then, use the following command:

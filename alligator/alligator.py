@@ -116,7 +116,7 @@ class Alligator:
         # Create optional object and literal fetchers if endpoints provided
         object_fetcher = None
         literal_fetcher = None
-        if self.object_retrieval_endpoint and self.entity_retrieval_token:
+        if self.object_retrieval_endpoint:
             object_fetcher = ObjectFetcher(
                 self.object_retrieval_endpoint,
                 self.entity_retrieval_token,
@@ -125,7 +125,7 @@ class Alligator:
                 cache_collection=self._OBJECT_CACHE_COLLECTION,
             )
 
-        if self.literal_retrieval_endpoint and self.entity_retrieval_token:
+        if self.literal_retrieval_endpoint:
             literal_fetcher = LiteralFetcher(
                 self.literal_retrieval_endpoint,
                 self.entity_retrieval_token,

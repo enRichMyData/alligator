@@ -168,3 +168,163 @@ class CandidateFetcher:
         for entity_name, candidates in results.items():
             results[entity_name] = [c for c in candidates if not c.get("is_placeholder", False)]
         return results
+
+
+class ObjectFetcher:
+    """
+    Fetcher for retrieving object information from LAMAPI.
+    """
+
+    def __init__(self, endpoint: str, token: str, **kwargs):
+        self.endpoint = endpoint
+        self.token = token
+        self._db_name = kwargs.get("db_name", "alligator_db")
+        self._mongo_uri = kwargs.get("mongo_uri", "mongodb://gator-mongodb:27017")
+        self.cache_collection = kwargs.get("cache_collection", "object_cache")
+        self.mongo_wrapper = MongoWrapper(self._mongo_uri, self._db_name)
+
+    def get_db(self):
+        """Get MongoDB database connection for current process"""
+        from alligator.mongo import MongoConnectionManager
+
+        client = MongoConnectionManager.get_client(self._mongo_uri)
+        return client[self._db_name]
+
+    def get_object_cache(self):
+        return MongoCache(self.get_db(), self.cache_collection)
+
+    async def fetch_objects(self, entity_ids):
+        """Fetch objects for a list of entity IDs."""
+        if not entity_ids:
+            return {}
+
+        # Filter out already cached IDs
+        cache = self.get_object_cache()
+        to_fetch = []
+        results = {}
+
+        for entity_id in entity_ids:
+            cached_result = cache.get(entity_id)
+            if cached_result is not None:
+                results[entity_id] = cached_result
+            else:
+                to_fetch.append(entity_id)
+
+        if not to_fetch:
+            return results
+
+        # Prepare batch request for non-cached IDs
+        url = f"{self.endpoint}?token={self.token}"
+
+        async with aiohttp.ClientSession(
+            timeout=MY_TIMEOUT, connector=aiohttp.TCPConnector(ssl=False, limit=10)
+        ) as session:
+            backoff = 1
+            for attempts in range(5):
+                try:
+                    # Use the correct JSON structure: {"json": [...]} instead of {"ids": [...]}
+                    request_data = {"json": to_fetch}
+                    async with session.post(url, json=request_data) as response:
+                        response.raise_for_status()
+                        data = await response.json()
+
+                        # Update cache and results
+                        for entity_id, objects_data in data.items():
+                            cache.put(entity_id, objects_data)
+                            results[entity_id] = objects_data
+
+                        return results
+
+                except Exception:
+                    if attempts == 4:
+                        self.mongo_wrapper.log_to_db(
+                            "FETCH_OBJECTS_ERROR",
+                            "Error fetching objects for entities",
+                            traceback.format_exc(),
+                            attempt=attempts + 1,
+                        )
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, 16)
+
+        # If all attempts fail, return what we have
+        return results
+
+
+class LiteralFetcher:
+    """
+    Fetcher for retrieving literal information from LAMAPI.
+    """
+
+    def __init__(self, endpoint: str, token: str, **kwargs):
+        self.endpoint = endpoint
+        self.token = token
+        self._db_name = kwargs.get("db_name", "alligator_db")
+        self._mongo_uri = kwargs.get("mongo_uri", "mongodb://gator-mongodb:27017")
+        self.cache_collection = kwargs.get("cache_collection", "literal_cache")
+        self.mongo_wrapper = MongoWrapper(self._mongo_uri, self._db_name)
+
+    def get_db(self):
+        """Get MongoDB database connection for current process"""
+        from alligator.mongo import MongoConnectionManager
+
+        client = MongoConnectionManager.get_client(self._mongo_uri)
+        return client[self._db_name]
+
+    def get_literal_cache(self):
+        return MongoCache(self.get_db(), self.cache_collection)
+
+    async def fetch_literals(self, entity_ids):
+        """Fetch literals for a list of entity IDs."""
+        if not entity_ids:
+            return {}
+
+        # Filter out already cached IDs
+        cache = self.get_literal_cache()
+        to_fetch = []
+        results = {}
+
+        for entity_id in entity_ids:
+            cached_result = cache.get(entity_id)
+            if cached_result is not None:
+                results[entity_id] = cached_result
+            else:
+                to_fetch.append(entity_id)
+
+        if not to_fetch:
+            return results
+
+        # Prepare batch request for non-cached IDs
+        url = f"{self.endpoint}?token={self.token}"
+
+        async with aiohttp.ClientSession(
+            timeout=MY_TIMEOUT, connector=aiohttp.TCPConnector(ssl=False, limit=10)
+        ) as session:
+            backoff = 1
+            for attempts in range(5):
+                try:
+                    # Use the correct JSON structure: {"json": [...]} instead of {"ids": [...]}
+                    request_data = {"json": to_fetch}
+                    async with session.post(url, json=request_data) as response:
+                        response.raise_for_status()
+                        data = await response.json()
+
+                        # Update cache and results
+                        for entity_id, literals_data in data.items():
+                            cache.put(entity_id, literals_data)
+                            results[entity_id] = literals_data
+
+                        return results
+
+                except Exception:
+                    if attempts == 4:
+                        self.mongo_wrapper.log_to_db(
+                            "FETCH_LITERALS_ERROR",
+                            "Error fetching literals for entities",
+                            traceback.format_exc(),
+                            attempt=attempts + 1,
+                        )
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, 16)
+
+        # If all attempts fail, return what we have
+        return results

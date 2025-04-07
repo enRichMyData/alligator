@@ -78,7 +78,6 @@ class RowBatchProcessor:
           2) Fetch and enhance candidates
           3) Process and save results
         """
-        db = self.get_db()
         try:
             # 1) Extract entities and row data
             entities, row_data_list = self._extract_entities(docs)
@@ -87,7 +86,7 @@ class RowBatchProcessor:
             candidates_results = await self._fetch_all_candidates(entities)
 
             # 3) Process each row and update DB
-            await self._process_rows(row_data_list, candidates_results, db)
+            await self._process_rows(row_data_list, candidates_results)
 
         except Exception:
             self.mongo_wrapper.log_to_db(
@@ -204,8 +203,10 @@ class RowBatchProcessor:
         return initial_results
 
     async def _process_rows(
-        self, row_data_list: List[RowData], candidates_results: Dict[str, List[dict]], db
+        self, row_data_list: List[RowData], candidates_results: Dict[str, List[dict]]
     ):
+        db = self.get_db()
+
         """Process each row and update database."""
         for row_data in row_data_list:
             # Collect QIDs from this row (needed for relationship features)

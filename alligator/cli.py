@@ -1,4 +1,6 @@
 #!/usr/bin/env python
+import time
+
 from dotenv import load_dotenv
 from jsonargparse import ArgumentParser
 
@@ -19,9 +21,11 @@ def main():
     args = parser.parse_args()
 
     print("🚀 Starting the entity linking process...")
+    tic = time.perf_counter()
     gator = Alligator(**args.gator)
     gator.run()
-    print("✅ Entity linking process completed.")
+    toc = time.perf_counter()
+    print(f"✅ Entity linking process completed in {toc - tic:0.4f} seconds.")
 
 
 if __name__ == "__main__":

@@ -5,7 +5,11 @@ import warnings
 import absl.logging
 import aiohttp
 import nltk
+from dotenv import load_dotenv
 from nltk.corpus import stopwords
+
+# Load environment variables from .env file
+load_dotenv()
 
 MY_TIMEOUT = aiohttp.ClientTimeout(
     total=30,  # Total time for the request

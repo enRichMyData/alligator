@@ -1,3 +1,4 @@
+import asyncio
 import multiprocessing as mp
 import os
 import time
@@ -72,10 +73,20 @@ class Alligator:
         self.columns_type = columns_type
         self.max_workers = max_workers or mp.cpu_count()
         self.max_candidates_in_result = max_candidates_in_result
-        self.entity_retrieval_endpoint = entity_retrieval_endpoint
-        self.entity_retrieval_token = entity_retrieval_token
-        self.object_retrieval_endpoint = object_retrieval_endpoint
-        self.literal_retrieval_endpoint = literal_retrieval_endpoint
+        self.entity_retrieval_endpoint = entity_retrieval_endpoint or os.getenv(
+            "ENTITY_RETRIEVAL_ENDPOINT"
+        )
+        if not self.entity_retrieval_endpoint:
+            raise ValueError("Entity retrieval endpoint must be provided.")
+        self.entity_retrieval_token = entity_retrieval_token or os.getenv("ENTITY_RETRIEVAL_TOKEN")
+        if not self.entity_retrieval_token:
+            raise ValueError("Entity retrieval token must be provided.")
+        self.object_retrieval_endpoint = object_retrieval_endpoint or os.getenv(
+            "OBJECT_RETRIEVAL_ENDPOINT"
+        )
+        self.literal_retrieval_endpoint = literal_retrieval_endpoint or os.getenv(
+            "LITERAL_RETRIEVAL_ENDPOINT"
+        )
         self.candidate_retrieval_limit = candidate_retrieval_limit
         self.ranker_model_path = ranker_model_path or os.path.join(
             PROJECT_ROOT, "alligator", "models", "ranker.h5"
@@ -102,7 +113,7 @@ class Alligator:
         )
 
         # Instantiate our helper objects
-        self._candidate_fetcher = CandidateFetcher(
+        self.candidate_fetcher = CandidateFetcher(
             self.entity_retrieval_endpoint,
             self.entity_retrieval_token,
             self.candidate_retrieval_limit,
@@ -114,10 +125,10 @@ class Alligator:
         )
 
         # Create optional object and literal fetchers if endpoints provided
-        object_fetcher = None
-        literal_fetcher = None
+        self.object_fetcher = None
+        self.literal_fetcher = None
         if self.object_retrieval_endpoint:
-            object_fetcher = ObjectFetcher(
+            self.object_fetcher = ObjectFetcher(
                 self.object_retrieval_endpoint,
                 self.entity_retrieval_token,
                 db_name=self._DB_NAME,
@@ -126,7 +137,7 @@ class Alligator:
             )
 
         if self.literal_retrieval_endpoint:
-            literal_fetcher = LiteralFetcher(
+            self.literal_fetcher = LiteralFetcher(
                 self.literal_retrieval_endpoint,
                 self.entity_retrieval_token,
                 db_name=self._DB_NAME,
@@ -135,9 +146,10 @@ class Alligator:
             )
 
         self._row_processor = RowBatchProcessor(
-            self._candidate_fetcher,
-            object_fetcher,
-            literal_fetcher,
+            self.feature,
+            self.candidate_fetcher,
+            self.object_fetcher,
+            self.literal_fetcher,
             self.max_candidates_in_result,
             db_name=self._DB_NAME,
             mongo_uri=self._mongo_uri,
@@ -471,21 +483,31 @@ class Alligator:
         )
         return worker.run(global_type_counts=global_type_counts)
 
-    def worker(self, rank: int):
+    async def process_batch(self, docs):
+        tasks_by_table = {}
+        for doc in docs:
+            dataset_name = doc["dataset_name"]
+            table_name = doc["table_name"]
+            tasks_by_table.setdefault((dataset_name, table_name), []).append(doc)
+
+        for (dataset_name, table_name), table_docs in tasks_by_table.items():
+            await self._row_processor.process_rows_batch(table_docs)
+
+    async def worker_async(self, rank: int):
         db = self.get_db()
         input_collection = db[self._INPUT_COLLECTION]
+        total_rows = self.mongo_wrapper.count_documents(input_collection, {"status": "TODO"})
         while True:
-            todo_docs = self.claim_todo_batch(input_collection)
+            todo_docs = self.claim_todo_batch(
+                input_collection, batch_size=total_rows // self.max_workers
+            )
             if not todo_docs:
                 print("No more tasks to process.")
                 break
-            tasks_by_table = {}
-            for doc in todo_docs:
-                dataset_name = doc["dataset_name"]
-                table_name = doc["table_name"]
-                tasks_by_table.setdefault((dataset_name, table_name), []).append(doc)
-            for (dataset_name, table_name), docs in tasks_by_table.items():
-                self._row_processor.process_rows_batch(docs, dataset_name, table_name)
+            await self.process_batch(todo_docs)
+
+    def worker(self, rank: int):
+        asyncio.run(self.worker_async(rank))
 
     def run(self):
         self.onboard_data(self.dataset_name, self.table_name, columns_type=self.columns_type)

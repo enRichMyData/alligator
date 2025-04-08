@@ -504,7 +504,7 @@ class Alligator:
         total_rows = self.mongo_wrapper.count_documents(input_collection, {"status": "TODO"})
         while True:
             todo_docs = self.claim_todo_batch(
-                input_collection, batch_size=total_rows // self.max_workers
+                input_collection, batch_size=max(1, total_rows // self.max_workers)
             )
             if not todo_docs:
                 print("No more tasks to process.")

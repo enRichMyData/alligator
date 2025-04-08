@@ -36,8 +36,8 @@ class Alligator:
         self,
         input_csv: str | Path | pd.DataFrame,
         output_csv: str | Path | None = None,
-        dataset_name: str = None,
-        table_name: str = None,
+        dataset_name: str | None = None,
+        table_name: str | None = None,
         columns_type: ColType | None = None,
         max_workers: Optional[int] = None,
         max_candidates_in_result: int = 5,
@@ -164,6 +164,9 @@ class Alligator:
         # Create indexes
         self.mongo_wrapper.create_indexes()
 
+        # Onboard data
+        self.onboard_data(self.dataset_name, self.table_name, columns_type=self.columns_type)
+
     def get_db(self):
         """Get MongoDB database connection for current process"""
         from alligator.mongo import MongoConnectionManager
@@ -198,8 +201,8 @@ class Alligator:
 
     def onboard_data(
         self,
-        dataset_name: str = None,
-        table_name: str = None,
+        dataset_name: str | None = None,
+        table_name: str | None = None,
         columns_type: ColType | None = None,
     ):
         """Efficiently load data into MongoDB using batched inserts."""
@@ -217,7 +220,7 @@ class Alligator:
             is_csv_path = False
         else:
             sample = pd.read_csv(self.input_csv, nrows=1024)
-            total_rows = "unknown"
+            total_rows = -1
             is_csv_path = True
 
         print(f"Onboarding {total_rows} rows for dataset '{dataset_name}', table '{table_name}'")
@@ -345,7 +348,6 @@ class Alligator:
             header = self.input_csv.columns.tolist()
         elif isinstance(self.input_csv, str):
             header = pd.read_csv(self.input_csv, nrows=0).columns.tolist()
-        num_cols = len(header)
 
         # Get first document to determine column count if header is still None
         sample_doc = input_collection.find_one(
@@ -357,7 +359,7 @@ class Alligator:
 
         if header is None:
             print("Could not extract header from input table, using generic column names.")
-            header = [f"col_{i}" for i in range(num_cols)]
+            header = [f"col_{i}" for i in range(len(sample_doc["data"]))]
 
         # Process in batches with cursor
         batch_size = 1024  # Process 1024 documents at a time
@@ -468,7 +470,7 @@ class Alligator:
         self,
         rank: int,
         stage: str = "rank",
-        global_type_counts: Dict[Any, Counter] = None,
+        global_type_counts: Dict[Any, Counter] = {},
     ):
         """Unified wrapper function for ML workers"""
         worker = MLWorker(
@@ -515,8 +517,6 @@ class Alligator:
         asyncio.run(self.worker_async(rank))
 
     def run(self):
-        self.onboard_data(self.dataset_name, self.table_name, columns_type=self.columns_type)
-
         db = self.get_db()
         input_collection = db[self._INPUT_COLLECTION]
 

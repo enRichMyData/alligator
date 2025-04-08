@@ -52,13 +52,15 @@ class Alligator:
         batch_size: int = 1024,
         ml_ranking_workers: int = 2,
         top_n_for_type_freq: int = 3,
+        doc_percentage_type_features: float = 0.7,
+        save_output_to_csv: bool = True,
         **kwargs,
     ) -> None:
         from alligator.mongo import MongoWrapper
 
         self.input_csv = input_csv
         self.output_csv = output_csv
-        if self.output_csv is None and kwargs.get("save_output_to_csv", True):
+        if self.output_csv is None and save_output_to_csv:
             if isinstance(self.input_csv, pd.DataFrame):
                 raise ValueError(
                     "An output name must be specified is the input is a `pd.Dataframe`"
@@ -97,8 +99,11 @@ class Alligator:
         self.batch_size = batch_size
         self.ml_ranking_workers = ml_ranking_workers
         self.top_n_for_type_freq = top_n_for_type_freq
+        self.doc_percentage_type_features = doc_percentage_type_features
+        if not (0 < self.doc_percentage_type_features <= 1):
+            raise ValueError("doc_percentage_type_features must be between 0 and 1 (exclusive).")
         self._mongo_uri = kwargs.pop("mongo_uri", None) or self._DEFAULT_MONGO_URI
-        self._save_output_to_csv = kwargs.pop("save_output_to_csv", True)
+        self._save_output_to_csv = save_output_to_csv
         self.mongo_wrapper = MongoWrapper(
             self._mongo_uri, self._DB_NAME, self._ERROR_LOG_COLLECTION
         )
@@ -532,7 +537,7 @@ class Alligator:
             )
 
         global_type_counts = self.feature.compute_global_type_frequencies(
-            docs_to_process=0.7, random_sample=True
+            docs_to_process=self.doc_percentage_type_features, random_sample=True
         )
 
         with mp.Pool(processes=self.ml_ranking_workers) as pool:

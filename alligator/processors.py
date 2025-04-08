@@ -217,9 +217,7 @@ class RowBatchProcessor:
                 await self._enhance_with_lamapi_features(row_data, candidates_results)
 
             # Build final results
-            training_candidates = self._build_linked_entities_and_training(
-                row_data, candidates_results
-            )
+            training_candidates = self._rank_candidates_by_col(row_data, candidates_results)
 
             # Update database
             db[self.input_collection].update_one(
@@ -305,11 +303,11 @@ class RowBatchProcessor:
             all_candidates_by_col, row_data.lit_columns, row_data.row, literals_data
         )
 
-    def _build_linked_entities_and_training(
+    def _rank_candidates_by_col(
         self, row_data: RowData, candidates_results: Dict[str, List[dict]]
     ) -> Dict[str, List[dict]]:
         """Build final ranked candidate lists by column."""
-        training_candidates_by_col = {}
+        candidates_by_col = {}
 
         for col_idx, ner_type in row_data.ne_columns.items():
             col_idx_int = int(col_idx)
@@ -327,6 +325,6 @@ class RowBatchProcessor:
 
             # Rank candidates
             ranked_candidates = sorted(candidates, key=lambda x: x.get("score", 0.0), reverse=True)
-            training_candidates_by_col[col_idx] = ranked_candidates
+            candidates_by_col[col_idx] = ranked_candidates
 
-        return training_candidates_by_col
+        return candidates_by_col

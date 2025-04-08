@@ -103,10 +103,10 @@ class RowBatchProcessor:
         for doc in docs:
             row = doc["data"]
             ne_columns = doc["classified_columns"].get("NE", {})
+            lit_columns = doc["classified_columns"].get("LIT", {})
             context_columns = doc.get("context_columns", [])
             correct_qids = doc.get("correct_qids", {})
             row_index = doc.get("row_id")
-            lit_columns = doc["classified_columns"].get("LIT", {})
 
             # Build context text
             context_text = " ".join(str(row[int(c)]) for c in sorted(context_columns, key=int))
@@ -209,9 +209,6 @@ class RowBatchProcessor:
 
         """Process each row and update database."""
         for row_data in row_data_list:
-            # Collect QIDs from this row (needed for relationship features)
-            self._collect_row_qids(row_data, candidates_results)
-
             # Process each entity in the row
             self._process_row_entities(row_data, candidates_results)
 
@@ -258,33 +255,6 @@ class RowBatchProcessor:
             candidates_results[entity_value] = self.feature.process_candidates(
                 candidates, entity_value, row_tokens
             )
-
-    def _collect_row_qids(
-        self, row_data: RowData, candidates_results: Dict[str, List[dict]]
-    ) -> List[str]:
-        """Collect all QIDs from a row's candidates."""
-        row_qids = set()
-
-        for col_idx, ner_type in row_data.ne_columns.items():
-            col_idx_int = int(col_idx)
-
-            if col_idx_int >= len(row_data.row):
-                continue
-
-            cell_value = row_data.row[col_idx_int]
-            if not cell_value or pd.isna(cell_value):
-                continue
-
-            # Normalize value
-            entity_value = str(cell_value).strip().replace("_", " ").lower()
-            candidates = candidates_results.get(entity_value, [])
-
-            # Collect QIDs
-            for cand in candidates:
-                if cand.get("id"):
-                    row_qids.add(cand["id"])
-
-        return list(row_qids)
 
     async def _enhance_with_lamapi_features(
         self, row_data: RowData, candidates_results: Dict[str, List[dict]]
@@ -356,32 +326,7 @@ class RowBatchProcessor:
             candidates = candidates_results.get(entity_value, [])
 
             # Rank candidates
-            max_training_candidates = len(candidates)
             ranked_candidates = sorted(candidates, key=lambda x: x.get("score", 0.0), reverse=True)
-
-            # Handle correct QID if provided
-            correct_qid = row_data.correct_qids.get(f"{row_data.row_index}-{col_idx}")
-            if correct_qid:
-                # Check if correct QID is in top results
-                top_ids = [
-                    c["id"] for c in ranked_candidates[:max_training_candidates] if c.get("id")
-                ]
-                if correct_qid not in top_ids:
-                    # Try to find correct candidate
-                    correct_candidate = next(
-                        (c for c in ranked_candidates if c.get("id") == correct_qid), None
-                    )
-                    if correct_candidate:
-                        # Replace last candidate with correct one
-                        top_candidates = ranked_candidates[: max_training_candidates - 1]
-                        top_candidates.append(correct_candidate)
-                        ranked_candidates = sorted(
-                            top_candidates, key=lambda x: x.get("score", 0.0), reverse=True
-                        )
-
-            # Store final results
-            training_candidates = ranked_candidates[:max_training_candidates]
-            if training_candidates:
-                training_candidates_by_col[col_idx] = training_candidates
+            training_candidates_by_col[col_idx] = ranked_candidates
 
         return training_candidates_by_col

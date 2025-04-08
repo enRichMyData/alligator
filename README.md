@@ -34,24 +34,30 @@ You can run the entity linking process via the command line interface (CLI) as f
 
 First, create a `.env` file with the required environment variables:
 
-```ini
+```
 ENTITY_RETRIEVAL_ENDPOINT=https://lamapi.hel.sintef.cloud/lookup/entity-retrieval
 OBJECT_RETRIEVAL_ENDPOINT=https://lamapi.hel.sintef.cloud/entity/objects
 LITERAL_RETRIEVAL_ENDPOINT=https://lamapi.hel.sintef.cloud/entity/literals
-ENTITY_RETRIEVAL_TOKEN=lamapi_demo_2023
+LITERAL_RETRIEVAL_TOKEN=lamapi_demo_2023
+MONGO_URI=mongodb://gator-mongodb:27017
 MONGO_SERVER_PORT=27017
 JUPYTER_SERVER_PORT=8888
 MONGO_VERSION=7.0
-COMPOSE_BAKE=true
 ```
 
-Then, use the following command:
+Then, start the services (MongoDB service is the one needed) with
+
+```bash
+docker compose up -d --build
+```
+
+Finally, run Alligator from the CLI with:
 
 ```bash
 python3 -m alligator.cli \
   --gator.input_csv tables/imdb_top_1000.csv \
-  --gator.entity_retrieval_endpoint "$ENTITY_RETRIEVAL_ENDPOINT" \
-  --gator.entity_retrieval_token "$ENTITY_RETRIEVAL_TOKEN" \
+  --gator.entity_retrieval_endpoint "https://lamapi.hel.sintef.cloud/lookup/entity-retrieval" \
+  --gator.entity_retrieval_token "lamapi_demo_2023" \
   --gator.mongo_uri "localhost:27017"
 ```
 
@@ -61,8 +67,8 @@ To specify column types for your input table, use the following command:
 ```bash
 python3 -m alligator.cli \
   --gator.input_csv tables/imdb_top_1000.csv \
-  --gator.entity_retrieval_endpoint "$ENTITY_RETRIEVAL_ENDPOINT" \
-  --gator.entity_retrieval_token "$ENTITY_RETRIEVAL_TOKEN" \
+  --gator.entity_retrieval_endpoint "https://lamapi.hel.sintef.cloud/lookup/entity-retrieval" \
+  --gator.entity_retrieval_token "lamapi_demo_2023" \
   --gator.columns_type '{
     "NE": { "0": "OTHER" },
     "LIT": {
@@ -81,61 +87,90 @@ python3 -m alligator.cli \
 You can also run the entity linking process using the `Alligator` class in Python:
 
 ```python
-from alligator import Alligator
 import os
+import time
 
-file_path = './tables/imdb_top_1000.csv'
+from dotenv import load_dotenv
 
-# Create an instance of the Alligator class
-crocodile_instance = Alligator(
-    table_name="imdb",
-    dataset_name="cinema",
-    max_candidates=3,
-    entity_retrieval_token=os.environ["ENTITY_RETRIEVAL_TOKEN"],
-    entity_retrieval_endpoint=os.environ["ENTITY_RETRIEVAL_ENDPOINT"],
-)
+from alligator import Alligator
 
-# Run the entity linking process
-crocodile_instance.run()
+# Load environment variables from .env file
+load_dotenv()
 
-print("Entity linking process completed.")
+if __name__ == "__main__":
+    # Load the CSV file into a DataFrame
+    file_path = "./tables/imdb_top_100.csv"
+
+    # Create an instance of the Alligator class
+    gator = Alligator(
+        input_csv=file_path,
+        dataset_name="cinema",
+        table_name="imdb_top_100",
+        entity_retrieval_endpoint=os.environ["ENTITY_RETRIEVAL_ENDPOINT"],
+        entity_retrieval_token=os.environ["ENTITY_RETRIEVAL_TOKEN"],
+        object_retrieval_endpoint=os.environ["OBJECT_RETRIEVAL_ENDPOINT"],
+        literal_retrieval_endpoint=os.environ["LITERAL_RETRIEVAL_ENDPOINT"],
+        max_workers=2,
+        candidate_retrieval_limit=10,
+        max_candidates_in_result=3,
+        batch_size=256,
+        mongo_uri="localhost:27017",
+    )
+
+    # Run the entity linking process
+    tic = time.perf_counter()
+    gator.run()
+    toc = time.perf_counter()
+    print("Elapsed time:", toc - tic)
+    print("Entity linking process completed.")
 ```
 
 ### Specifying Column Types
 If you want to specify column types for your input table, use the following example:
 
 ```python
-from alligator import Alligator
 import os
+import time
 
-file_path = './tables/imdb_top_1000.csv'
+from dotenv import load_dotenv
 
-# Create an instance of the Alligator class
-crocodile_instance = Alligator(
-    table_name="imdb",
-    dataset_name="cinema",
-    max_candidates=3,
-    entity_retrieval_token=os.environ["ENTITY_RETRIEVAL_TOKEN"],
-    entity_retrieval_endpoint=os.environ["ENTITY_RETRIEVAL_ENDPOINT"],
-    columns_type={
-        "NE": {
-            "0": "OTHER"
+from alligator import Alligator
+
+# Load environment variables from .env file
+load_dotenv()
+
+if __name__ == "__main__":
+    # Load the CSV file into a DataFrame
+    file_path = "./tables/imdb_top_100.csv"
+
+    # Create an instance of the Alligator class
+    gator = Alligator(
+        input_csv=file_path,
+        dataset_name="cinema",
+        table_name="imdb_top_100",
+        entity_retrieval_endpoint=os.environ["ENTITY_RETRIEVAL_ENDPOINT"],
+        entity_retrieval_token=os.environ["ENTITY_RETRIEVAL_TOKEN"],
+        object_retrieval_endpoint=os.environ["OBJECT_RETRIEVAL_ENDPOINT"],
+        literal_retrieval_endpoint=os.environ["LITERAL_RETRIEVAL_ENDPOINT"],
+        max_workers=2,
+        candidate_retrieval_limit=10,
+        max_candidates_in_result=3,
+        batch_size=256,
+        columns_type={
+            "NE": {"0": "OTHER", "7": "OTHER"},
+            "LIT": {"1": "NUMBER", "2": "NUMBER", "3": "STRING", "4": "NUMBER", "5": "STRING"},
+            "IGNORED": ["6", "9", "10", "7", "8"],
         },
-        "LIT": {
-            "1": "NUMBER",
-            "2": "NUMBER",
-            "3": "STRING",
-            "4": "NUMBER",
-            "5": "STRING"
-        },
-        "IGNORED" : ["6", "9", "10", "7", "8"]
-    }
-)
+        mongo_uri="localhost:27017",
+    )
 
-# Run the entity linking process
-crocodile_instance.run()
+    # Run the entity linking process
+    tic = time.perf_counter()
+    gator.run()
+    toc = time.perf_counter()
+    print("Elapsed time:", toc - tic)
+    print("Entity linking process completed.")
 
-print("Entity linking process completed.")
 ```
 
 In the `columns_type` parameter, one has to specify **for every column index** whether it is a Named-Entity (NE) column or a Literal (LIT) one. All the columns that are not specified neither as NE nor as LIT will be considered as IGNORED columns.

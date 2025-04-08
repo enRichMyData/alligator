@@ -6,6 +6,7 @@ from pymongo.collection import Collection
 from pymongo.database import Database
 
 from alligator.mongo import MongoConnectionManager
+from alligator.typing import LiteralsData, ObjectsData
 from alligator.utils import ngrams, tokenize_text
 
 DEFAULT_FEATURES = [
@@ -84,11 +85,6 @@ class Feature:
     ) -> List[Dict[str, Any]]:
         """
         Process candidate records to calculate a set of features for each candidate.
-
-        Note:
-            The fields 'name', 'entity_name', and 'description' might be None.
-            For computations we convert them to an empty string, but the output
-            preserves the original value.
         """
         # Use a safe version of entity_name for computations.
         safe_entity_name: str = entity_name if entity_name is not None else ""
@@ -267,8 +263,14 @@ class Feature:
         print(f"Computed type frequencies from {doc_count} documents")
         return type_freq_by_column
 
-    def compute_entity_entity_relationships(self, all_candidates_by_col, objects_data):
-        """Compute relationships between named entities."""
+    def compute_entity_entity_relationships(
+        self,
+        all_candidates_by_col: Dict[str, List[Dict[str, Any]]],
+        objects_data: Dict[str, ObjectsData],
+    ) -> None:
+        """
+        Compute relationships between named entities.
+        """
         if not all_candidates_by_col or len(all_candidates_by_col) <= 1:
             return
 
@@ -357,9 +359,15 @@ class Feature:
                             )
 
     def compute_entity_literal_relationships(
-        self, all_candidates_by_col, lit_columns, row, literals_data
-    ):
-        """Compute relationships between named entities and literals."""
+        self,
+        all_candidates_by_col: Dict[str, List[Dict[str, Any]]],
+        lit_columns: Dict[str, str],
+        row: List[Any],
+        literals_data: Dict[str, LiteralsData],
+    ) -> None:
+        """
+        Compute relationships between named entities and literals.
+        """
         if not all_candidates_by_col or not lit_columns:
             return
 

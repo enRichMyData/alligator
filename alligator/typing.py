@@ -11,6 +11,14 @@ class ColType(TypedDict):
     IGNORED: List[str]
 
 
+class ObjectsData(TypedDict):
+    objects: Dict[str, List[str]]
+
+
+class LiteralsData(TypedDict):
+    literals: Dict[str, Dict[str, List[str]]]
+
+
 @dataclass
 class Entity:
     """Represents a named entity from a table cell."""

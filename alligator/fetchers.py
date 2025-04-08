@@ -1,5 +1,6 @@
 import asyncio
 import traceback
+from typing import Dict, List, Optional
 from urllib.parse import quote
 
 import aiohttp
@@ -7,6 +8,7 @@ import aiohttp
 from alligator import MY_TIMEOUT
 from alligator.feature import Feature
 from alligator.mongo import MongoCache, MongoWrapper
+from alligator.typing import LiteralsData, ObjectsData
 
 
 class CandidateFetcher:
@@ -44,8 +46,25 @@ class CandidateFetcher:
     def get_candidate_cache(self):
         return MongoCache(self.get_db(), self.cache_collection)
 
-    async def fetch_candidates_batch(self, entities, row_texts, fuzzies, qids):
-        """Fetch candidates for a batch of entities"""
+    async def fetch_candidates_batch(
+        self,
+        entities: List[str],
+        row_texts: List[str],
+        fuzzies: List[bool],
+        qids: List[Optional[str]],
+    ) -> Dict[str, List[dict]]:
+        """
+        Fetch candidates for multiple entities in a batch.
+
+        Args:
+            entities: List of entity names to find candidates for
+            row_texts: Context text for each entity
+            fuzzies: Whether to use fuzzy matching for each entity
+            qids: Known correct QIDs for each entity (optional)
+
+        Returns:
+            Dictionary mapping entity names to lists of candidate dictionaries
+        """
         return await self.fetch_candidates_batch_async(entities, row_texts, fuzzies, qids)
 
     async def _fetch_candidates(
@@ -190,8 +209,16 @@ class ObjectFetcher:
     def get_object_cache(self):
         return MongoCache(self.get_db(), self.cache_collection)
 
-    async def fetch_objects(self, entity_ids):
-        """Fetch objects for a list of entity IDs."""
+    async def fetch_objects(self, entity_ids: List[str]) -> Dict[str, ObjectsData]:
+        """
+        Fetch object data for multiple entity IDs.
+
+        Args:
+            entity_ids: List of entity IDs to fetch object data for
+
+        Returns:
+            Dictionary mapping entity IDs to their object data
+        """
         if not entity_ids:
             return {}
 
@@ -270,8 +297,16 @@ class LiteralFetcher:
     def get_literal_cache(self):
         return MongoCache(self.get_db(), self.cache_collection)
 
-    async def fetch_literals(self, entity_ids):
-        """Fetch literals for a list of entity IDs."""
+    async def fetch_literals(self, entity_ids: List[str]) -> Dict[str, LiteralsData]:
+        """
+        Fetch literal values for multiple entity IDs.
+
+        Args:
+            entity_ids: List of entity IDs to fetch literal values for
+
+        Returns:
+            Dictionary mapping entity IDs to their literal values
+        """
         if not entity_ids:
             return {}
 

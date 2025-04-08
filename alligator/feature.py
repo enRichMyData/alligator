@@ -317,7 +317,7 @@ class Feature:
                         if not string_features:
                             continue
 
-                        p_subj_ne = round(sum(string_features) / len(string_features), 3)
+                        p_subj_ne = sum(string_features) / len(string_features)
                         obj_score_max = max(obj_score_max, p_subj_ne)
 
                         # Track the best score for each object
@@ -332,9 +332,7 @@ class Feature:
                                 )
 
                         if subj_string_features:
-                            score_rel = round(
-                                sum(subj_string_features) / len(subj_string_features), 3
-                            )
+                            score_rel = sum(subj_string_features) / len(subj_string_features)
                             object_rel_score_buffer[obj_id] = max(
                                 object_rel_score_buffer[obj_id], score_rel
                             )
@@ -342,22 +340,20 @@ class Feature:
                         # Record predicates connecting subject to object
                         for predicate in subj_objects.get(obj_id, []):
                             subj_candidate["matches"][str(obj_col)].append(
-                                {"p": predicate, "o": obj_id, "s": round(p_subj_ne, 3)}
+                                {"p": predicate, "o": obj_id, "s": p_subj_ne}
                             )
                             subj_candidate["predicates"][str(obj_col)][predicate] = p_subj_ne
 
                     # Normalize and update subject's feature
                     if obj_score_max > 0:
-                        subj_candidate["features"]["p_subj_ne"] += round(
-                            obj_score_max / n_ne_cols, 3
-                        )
+                        subj_candidate["features"]["p_subj_ne"] += obj_score_max / n_ne_cols
 
                     # Update object candidates' features
                     for obj_candidate in obj_candidates:
                         obj_id = obj_candidate.get("id")
                         if obj_id in object_rel_score_buffer:
-                            obj_candidate["features"]["p_obj_ne"] += round(
-                                object_rel_score_buffer[obj_id] / n_ne_cols, 3
+                            obj_candidate["features"]["p_obj_ne"] += (
+                                object_rel_score_buffer[obj_id] / n_ne_cols
                             )
 
     def compute_entity_literal_relationships(
@@ -406,21 +402,15 @@ class Feature:
                 row_all_tokens = set(tokenize_text(row_text_all))
                 row_lit_tokens = set(tokenize_text(row_text_lit))
 
-                p_subj_lit_all_datatype = round(
-                    (
-                        len(lit_tokens & row_lit_tokens) / len(lit_tokens | row_lit_tokens)
-                        if lit_tokens and row_lit_tokens
-                        else 0
-                    ),
-                    3,
+                p_subj_lit_all_datatype = (
+                    len(lit_tokens & row_lit_tokens) / len(lit_tokens | row_lit_tokens)
+                    if lit_tokens and row_lit_tokens
+                    else 0
                 )
-                p_subj_lit_row = round(
-                    (
-                        len(lit_tokens & row_all_tokens) / len(lit_tokens | row_all_tokens)
-                        if lit_tokens and row_all_tokens
-                        else 0
-                    ),
-                    3,
+                p_subj_lit_row = (
+                    len(lit_tokens & row_all_tokens) / len(lit_tokens | row_all_tokens)
+                    if lit_tokens and row_all_tokens
+                    else 0
                 )
 
                 subj_candidate["features"]["p_subj_lit_all_datatype"] = p_subj_lit_all_datatype
@@ -486,8 +476,6 @@ class Feature:
                                         lit_tokens | kg_tokens
                                     )
 
-                            p_subj_lit = round(p_subj_lit, 3)
-
                             if p_subj_lit > 0:
                                 # Record match
                                 subj_candidate["matches"][lit_col].append(
@@ -506,6 +494,4 @@ class Feature:
 
                     # Normalize and update feature
                     if max_score > 0:
-                        subj_candidate["features"]["p_subj_lit_datatype"] += round(
-                            max_score / n_lit_cols, 3
-                        )
+                        subj_candidate["features"]["p_subj_lit_datatype"] += max_score / n_lit_cols

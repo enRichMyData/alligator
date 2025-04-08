@@ -1,6 +1,7 @@
 from collections import Counter, defaultdict
 from typing import Any, Dict, List, Optional, Set
 
+import pandas as pd
 from pymongo.collection import Collection
 from pymongo.database import Database
 
@@ -265,3 +266,232 @@ class Feature:
 
         print(f"Computed type frequencies from {doc_count} documents")
         return type_freq_by_column
+
+    def compute_entity_entity_relationships(self, all_candidates_by_col, objects_data):
+        """Compute relationships between named entities."""
+        if not all_candidates_by_col or len(all_candidates_by_col) <= 1:
+            return
+
+        # Count the number of NE columns for normalization
+        n_ne_cols = len(all_candidates_by_col)
+
+        # Compare each NE column with every other NE column
+        for subj_col, subj_candidates in all_candidates_by_col.items():
+            for obj_col, obj_candidates in all_candidates_by_col.items():
+                if subj_col == obj_col:
+                    continue
+
+                # Process each subject candidate
+                for subj_candidate in subj_candidates:
+                    subj_id = subj_candidate.get("id")
+                    if not subj_id or subj_id not in objects_data:
+                        continue
+
+                    # Get the objects related to this subject
+                    subj_objects = objects_data[subj_id].get("objects", {})
+                    objects_set = set(subj_objects.keys())
+
+                    # Get object candidates' IDs in this column
+                    obj_candidate_ids = {oc.get("id") for oc in obj_candidates if oc.get("id")}
+                    objects_intersection = objects_set.intersection(obj_candidate_ids)
+
+                    # Skip if no intersection
+                    if not objects_intersection:
+                        continue
+
+                    # Calculate maximum object score for this subject
+                    obj_score_max = 0
+                    object_rel_score_buffer = {}
+
+                    for obj_candidate in obj_candidates:
+                        obj_id = obj_candidate.get("id")
+                        if not obj_id or obj_id not in objects_intersection:
+                            continue
+
+                        # Calculate similarity score (average of string similarity features)
+                        string_features = []
+                        for feature_name in ["ed_score", "jaccard_score", "jaccardNgram_score"]:
+                            if feature_name in obj_candidate.get("features", {}):
+                                string_features.append(obj_candidate["features"][feature_name])
+
+                        if not string_features:
+                            continue
+
+                        p_subj_ne = sum(string_features) / len(string_features)
+                        obj_score_max = max(obj_score_max, p_subj_ne)
+
+                        # Track the best score for each object
+                        object_rel_score_buffer[obj_id] = object_rel_score_buffer.get(obj_id, 0)
+
+                        # Calculate reverse score from subject to object
+                        subj_string_features = []
+                        for feature_name in ["ed_score", "jaccard_score", "jaccardNgram_score"]:
+                            if feature_name in subj_candidate.get("features", {}):
+                                subj_string_features.append(
+                                    subj_candidate["features"][feature_name]
+                                )
+
+                        if subj_string_features:
+                            score_rel = sum(subj_string_features) / len(subj_string_features)
+                            object_rel_score_buffer[obj_id] = max(
+                                object_rel_score_buffer[obj_id], score_rel
+                            )
+
+                        # Record predicates connecting subject to object
+                        for predicate in subj_objects.get(obj_id, []):
+                            subj_candidate["matches"][str(obj_col)].append(
+                                {"p": predicate, "o": obj_id, "s": p_subj_ne}
+                            )
+                            subj_candidate["predicates"][str(obj_col)][predicate] = p_subj_ne
+
+                    # Normalize and update subject's feature
+                    if obj_score_max > 0:
+                        subj_candidate["features"]["p_subj_ne"] += obj_score_max / n_ne_cols
+
+                    # Update object candidates' features
+                    for obj_candidate in obj_candidates:
+                        obj_id = obj_candidate.get("id")
+                        if obj_id in object_rel_score_buffer:
+                            obj_candidate["features"]["p_obj_ne"] += (
+                                object_rel_score_buffer[obj_id] / n_ne_cols
+                            )
+
+    def compute_entity_literal_relationships(
+        self, all_candidates_by_col, lit_columns, row, literals_data
+    ):
+        """Compute relationships between named entities and literals."""
+        if not all_candidates_by_col or not lit_columns:
+            return
+
+        # Count the number of LIT columns for normalization
+        n_lit_cols = len(lit_columns)
+        if n_lit_cols == 0:
+            return
+
+        # Get row text tokens
+        row_text_all = " ".join(str(v) for v in row if pd.notna(v)).lower()
+        row_text_lit = " ".join(
+            str(row[int(c)]) for c in lit_columns if int(c) < len(row) and pd.notna(row[int(c)])
+        ).lower()
+
+        # Process each subject (NE) candidate
+        for subj_col, subj_candidates in all_candidates_by_col.items():
+            for subj_candidate in subj_candidates:
+                subj_id = subj_candidate.get("id")
+                if not subj_id or subj_id not in literals_data:
+                    continue
+
+                # Get literals for this subject
+                subj_literals = literals_data[subj_id].get("literals", {})
+                if not subj_literals:
+                    continue
+
+                # Calculate row-wide literal features
+                lit_values = []
+                for datatype in subj_literals:
+                    for predicate in subj_literals[datatype]:
+                        lit_values.extend(
+                            str(val).lower() for val in subj_literals[datatype][predicate]
+                        )
+
+                lit_string = " ".join(lit_values)
+
+                # Calculate token-based similarity
+
+                lit_tokens = set(tokenize_text(lit_string))
+                row_all_tokens = set(tokenize_text(row_text_all))
+                row_lit_tokens = set(tokenize_text(row_text_lit))
+
+                p_subj_lit_all_datatype = (
+                    len(lit_tokens & row_lit_tokens) / len(lit_tokens | row_lit_tokens)
+                    if lit_tokens and row_lit_tokens
+                    else 0
+                )
+                p_subj_lit_row = (
+                    len(lit_tokens & row_all_tokens) / len(lit_tokens | row_all_tokens)
+                    if lit_tokens and row_all_tokens
+                    else 0
+                )
+
+                subj_candidate["features"]["p_subj_lit_all_datatype"] = p_subj_lit_all_datatype
+                subj_candidate["features"]["p_subj_lit_row"] = p_subj_lit_row
+
+                # Process each literal column
+                for lit_col, lit_type in lit_columns.items():
+                    lit_col_int = int(lit_col)
+                    if lit_col_int >= len(row):
+                        continue
+
+                    lit_value = row[lit_col_int]
+                    if not lit_value or pd.isna(lit_value):
+                        continue
+
+                    lit_value = str(lit_value).lower()
+                    lit_datatype = lit_type.upper()  # Normalize datatype
+
+                    # Find matching datatype in literals
+                    normalized_datatype = lit_datatype.lower()
+                    if normalized_datatype not in subj_literals:
+                        continue
+
+                    # Calculate maximum similarity for this literal column
+                    max_score = 0
+                    for predicate in subj_literals[normalized_datatype]:
+                        for kg_value in subj_literals[normalized_datatype][predicate]:
+                            kg_value = str(kg_value).lower()
+
+                            # Calculate similarity based on datatype
+                            p_subj_lit = 0
+                            if lit_datatype == "NUMBER":
+                                # Simple numeric similarity (could be improved)
+                                try:
+                                    num1 = float(lit_value)
+                                    num2 = float(kg_value)
+                                    if num1 == num2:
+                                        p_subj_lit = 1.0
+                                    else:
+                                        max_val = max(abs(num1), abs(num2))
+                                        diff = abs(num1 - num2)
+                                        if max_val > 0:
+                                            p_subj_lit = max(0, 1 - (diff / max_val))
+                                except (ValueError, TypeError):
+                                    pass
+                            elif lit_datatype == "DATETIME":
+                                # Simple string comparison for dates (could be improved)
+                                if lit_value == kg_value:
+                                    p_subj_lit = 1.0
+                                else:
+                                    # Simple substring match
+                                    p_subj_lit = (
+                                        0.5
+                                        if (lit_value in kg_value or kg_value in lit_value)
+                                        else 0
+                                    )
+                            else:  # STRING
+                                # Use token-based similarity
+                                lit_tokens = set(tokenize_text(lit_value))
+                                kg_tokens = set(tokenize_text(kg_value))
+                                if lit_tokens and kg_tokens:
+                                    p_subj_lit = len(lit_tokens & kg_tokens) / len(
+                                        lit_tokens | kg_tokens
+                                    )
+
+                            if p_subj_lit > 0:
+                                # Record match
+                                subj_candidate["matches"][lit_col].append(
+                                    {"p": predicate, "o": kg_value, "s": p_subj_lit}
+                                )
+
+                                # Update maximum score
+                                max_score = max(max_score, p_subj_lit)
+
+                                # Update predicates
+                                if predicate not in subj_candidate["predicates"][lit_col]:
+                                    subj_candidate["predicates"][lit_col][predicate] = 0
+                                subj_candidate["predicates"][lit_col][predicate] = max(
+                                    subj_candidate["predicates"][lit_col][predicate], p_subj_lit
+                                )
+
+                    # Normalize and update feature
+                    if max_score > 0:
+                        subj_candidate["features"]["p_subj_lit_datatype"] += max_score / n_lit_cols

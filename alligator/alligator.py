@@ -1,3 +1,4 @@
+import asyncio
 import multiprocessing as mp
 import os
 import time
@@ -51,13 +52,15 @@ class Alligator:
         batch_size: int = 1024,
         ml_ranking_workers: int = 2,
         top_n_for_type_freq: int = 3,
+        doc_percentage_type_features: float = 0.7,
+        save_output_to_csv: bool = True,
         **kwargs,
     ) -> None:
         from alligator.mongo import MongoWrapper
 
         self.input_csv = input_csv
         self.output_csv = output_csv
-        if self.output_csv is None and kwargs.get("save_output_to_csv", True):
+        if self.output_csv is None and save_output_to_csv:
             if isinstance(self.input_csv, pd.DataFrame):
                 raise ValueError(
                     "An output name must be specified is the input is a `pd.Dataframe`"
@@ -72,10 +75,20 @@ class Alligator:
         self.columns_type = columns_type
         self.max_workers = max_workers or mp.cpu_count()
         self.max_candidates_in_result = max_candidates_in_result
-        self.entity_retrieval_endpoint = entity_retrieval_endpoint
-        self.entity_retrieval_token = entity_retrieval_token
-        self.object_retrieval_endpoint = object_retrieval_endpoint
-        self.literal_retrieval_endpoint = literal_retrieval_endpoint
+        self.entity_retrieval_endpoint = entity_retrieval_endpoint or os.getenv(
+            "ENTITY_RETRIEVAL_ENDPOINT"
+        )
+        if not self.entity_retrieval_endpoint:
+            raise ValueError("Entity retrieval endpoint must be provided.")
+        self.entity_retrieval_token = entity_retrieval_token or os.getenv("ENTITY_RETRIEVAL_TOKEN")
+        if not self.entity_retrieval_token:
+            raise ValueError("Entity retrieval token must be provided.")
+        self.object_retrieval_endpoint = object_retrieval_endpoint or os.getenv(
+            "OBJECT_RETRIEVAL_ENDPOINT"
+        )
+        self.literal_retrieval_endpoint = literal_retrieval_endpoint or os.getenv(
+            "LITERAL_RETRIEVAL_ENDPOINT"
+        )
         self.candidate_retrieval_limit = candidate_retrieval_limit
         self.ranker_model_path = ranker_model_path or os.path.join(
             PROJECT_ROOT, "alligator", "models", "ranker.h5"
@@ -86,8 +99,11 @@ class Alligator:
         self.batch_size = batch_size
         self.ml_ranking_workers = ml_ranking_workers
         self.top_n_for_type_freq = top_n_for_type_freq
+        self.doc_percentage_type_features = doc_percentage_type_features
+        if not (0 < self.doc_percentage_type_features <= 1):
+            raise ValueError("doc_percentage_type_features must be between 0 and 1 (exclusive).")
         self._mongo_uri = kwargs.pop("mongo_uri", None) or self._DEFAULT_MONGO_URI
-        self._save_output_to_csv = kwargs.pop("save_output_to_csv", True)
+        self._save_output_to_csv = save_output_to_csv
         self.mongo_wrapper = MongoWrapper(
             self._mongo_uri, self._DB_NAME, self._ERROR_LOG_COLLECTION
         )
@@ -102,7 +118,7 @@ class Alligator:
         )
 
         # Instantiate our helper objects
-        self._candidate_fetcher = CandidateFetcher(
+        self.candidate_fetcher = CandidateFetcher(
             self.entity_retrieval_endpoint,
             self.entity_retrieval_token,
             self.candidate_retrieval_limit,
@@ -114,10 +130,10 @@ class Alligator:
         )
 
         # Create optional object and literal fetchers if endpoints provided
-        object_fetcher = None
-        literal_fetcher = None
+        self.object_fetcher = None
+        self.literal_fetcher = None
         if self.object_retrieval_endpoint:
-            object_fetcher = ObjectFetcher(
+            self.object_fetcher = ObjectFetcher(
                 self.object_retrieval_endpoint,
                 self.entity_retrieval_token,
                 db_name=self._DB_NAME,
@@ -126,7 +142,7 @@ class Alligator:
             )
 
         if self.literal_retrieval_endpoint:
-            literal_fetcher = LiteralFetcher(
+            self.literal_fetcher = LiteralFetcher(
                 self.literal_retrieval_endpoint,
                 self.entity_retrieval_token,
                 db_name=self._DB_NAME,
@@ -135,9 +151,10 @@ class Alligator:
             )
 
         self._row_processor = RowBatchProcessor(
-            self._candidate_fetcher,
-            object_fetcher,
-            literal_fetcher,
+            self.feature,
+            self.candidate_fetcher,
+            self.object_fetcher,
+            self.literal_fetcher,
             self.max_candidates_in_result,
             db_name=self._DB_NAME,
             mongo_uri=self._mongo_uri,
@@ -471,21 +488,31 @@ class Alligator:
         )
         return worker.run(global_type_counts=global_type_counts)
 
-    def worker(self, rank: int):
+    async def process_batch(self, docs):
+        tasks_by_table = {}
+        for doc in docs:
+            dataset_name = doc["dataset_name"]
+            table_name = doc["table_name"]
+            tasks_by_table.setdefault((dataset_name, table_name), []).append(doc)
+
+        for (dataset_name, table_name), table_docs in tasks_by_table.items():
+            await self._row_processor.process_rows_batch(table_docs)
+
+    async def worker_async(self, rank: int):
         db = self.get_db()
         input_collection = db[self._INPUT_COLLECTION]
+        total_rows = self.mongo_wrapper.count_documents(input_collection, {"status": "TODO"})
         while True:
-            todo_docs = self.claim_todo_batch(input_collection)
+            todo_docs = self.claim_todo_batch(
+                input_collection, batch_size=max(1, total_rows // self.max_workers)
+            )
             if not todo_docs:
                 print("No more tasks to process.")
                 break
-            tasks_by_table = {}
-            for doc in todo_docs:
-                dataset_name = doc["dataset_name"]
-                table_name = doc["table_name"]
-                tasks_by_table.setdefault((dataset_name, table_name), []).append(doc)
-            for (dataset_name, table_name), docs in tasks_by_table.items():
-                self._row_processor.process_rows_batch(docs, dataset_name, table_name)
+            await self.process_batch(todo_docs)
+
+    def worker(self, rank: int):
+        asyncio.run(self.worker_async(rank))
 
     def run(self):
         self.onboard_data(self.dataset_name, self.table_name, columns_type=self.columns_type)
@@ -510,7 +537,7 @@ class Alligator:
             )
 
         global_type_counts = self.feature.compute_global_type_frequencies(
-            docs_to_process=0.7, random_sample=True
+            docs_to_process=self.doc_percentage_type_features, random_sample=True
         )
 
         with mp.Pool(processes=self.ml_ranking_workers) as pool:

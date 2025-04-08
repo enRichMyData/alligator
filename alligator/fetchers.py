@@ -7,7 +7,6 @@ import aiohttp
 from alligator import MY_TIMEOUT
 from alligator.feature import Feature
 from alligator.mongo import MongoCache, MongoWrapper
-from alligator.utils import tokenize_text
 
 
 class CandidateFetcher:
@@ -45,8 +44,9 @@ class CandidateFetcher:
     def get_candidate_cache(self):
         return MongoCache(self.get_db(), self.cache_collection)
 
-    def fetch_candidates_batch(self, entities, row_texts, fuzzies, qids):
-        return asyncio.run(self.fetch_candidates_batch_async(entities, row_texts, fuzzies, qids))
+    async def fetch_candidates_batch(self, entities, row_texts, fuzzies, qids):
+        """Fetch candidates for a batch of entities"""
+        return await self.fetch_candidates_batch_async(entities, row_texts, fuzzies, qids)
 
     async def _fetch_candidates(
         self, entity_name, row_text, fuzzy, qid, session, cache: bool = True
@@ -68,11 +68,8 @@ class CandidateFetcher:
             try:
                 async with session.get(url) as response:
                     response.raise_for_status()
-                    candidates = await response.json()
-                    row_tokens = set(tokenize_text(row_text))
-                    fetched_candidates = self.feature.process_candidates(
-                        candidates, entity_name, row_tokens
-                    )
+                    fetched_candidates = await response.json()
+
                     # Ensure all QIDs are included by adding placeholders for missing ones
                     required_qids = qid.split() if qid else []
                     existing_qids = {c["id"] for c in fetched_candidates if c.get("id")}

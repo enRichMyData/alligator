@@ -443,13 +443,13 @@ class Feature:
                         continue
 
                     # Calculate maximum similarity for this literal column
-                    max_score = 0
+                    max_score = 0.0
                     for predicate in subj_literals[normalized_datatype]:
                         for kg_value in subj_literals[normalized_datatype][predicate]:
                             kg_value = str(kg_value).lower()
 
                             # Calculate similarity based on datatype
-                            p_subj_lit = 0
+                            p_subj_lit = 0.0
                             if lit_datatype == "NUMBER":
                                 # Simple numeric similarity (could be improved)
                                 try:

@@ -68,7 +68,7 @@ class CandidateFetcher:
         return await self.fetch_candidates_batch_async(entities, row_texts, fuzzies, qids)
 
     async def _fetch_candidates(
-        self, entity_name, row_text, fuzzy, qid, session, cache: bool = True
+        self, entity_name, row_text, fuzzy, qid, session, use_cache: bool = True
     ):
         """
         This used to be Alligator._fetch_candidates. Logic unchanged.

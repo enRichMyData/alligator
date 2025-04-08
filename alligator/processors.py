@@ -22,8 +22,8 @@ class RowBatchProcessor:
         self,
         feature: Feature,
         candidate_fetcher: CandidateFetcher,
-        object_fetcher: ObjectFetcher = None,
-        literal_fetcher: LiteralFetcher = None,
+        object_fetcher: ObjectFetcher | None = None,
+        literal_fetcher: LiteralFetcher | None = None,
         max_candidates_in_result: int = 5,
         **kwargs,
     ):
@@ -262,19 +262,21 @@ class RowBatchProcessor:
             return
 
         # Fetch external data
-        objects_data = await self.object_fetcher.fetch_objects(list(all_entity_ids))
-        literals_data = await self.literal_fetcher.fetch_literals(list(all_entity_ids))
+        objects_data = None
+        if self.object_fetcher:
+            objects_data = await self.object_fetcher.fetch_objects(list(all_entity_ids))
 
-        if not objects_data and not literals_data:
-            return
+        literals_data = None
+        if self.literal_fetcher:
+            literals_data = await self.literal_fetcher.fetch_literals(list(all_entity_ids))
 
-        # Process entity-entity relationships
-        self.feature.compute_entity_entity_relationships(all_candidates_by_col, objects_data)
+        if objects_data is not None:
+            self.feature.compute_entity_entity_relationships(all_candidates_by_col, objects_data)
 
-        # Process entity-literal relationships
-        self.feature.compute_entity_literal_relationships(
-            all_candidates_by_col, row_data.lit_columns, row_data.row, literals_data
-        )
+        if literals_data is not None:
+            self.feature.compute_entity_literal_relationships(
+                all_candidates_by_col, row_data.lit_columns, row_data.row, literals_data
+            )
 
     def _rank_candidates_by_col(
         self, row_data: RowData, candidates_results: Dict[str, List[dict]]

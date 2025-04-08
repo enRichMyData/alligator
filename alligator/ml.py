@@ -119,7 +119,7 @@ class MLWorker:
             row_id = doc["row_id"]
             candidates_by_column: Dict[Any, List[Dict[str, Any]]] = doc["candidates"]
             for col_index, candidates in candidates_by_column.items():
-                freq_counter: Dict[Any, float] = global_type_counts.get(col_index, {})
+                freq_counter: Counter = global_type_counts.get(col_index, Counter())
                 for idx, cand in enumerate(candidates):
                     cand_feats = cand.setdefault("features", {})
                     qids = [t.get("id") for t in cand.get("types", []) if t.get("id")]

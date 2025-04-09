@@ -1,14 +1,14 @@
 import hashlib
 import traceback
 from collections import defaultdict
-from typing import Dict, List
+from typing import Any, Dict, List
 
 import pandas as pd
 
 from alligator.feature import Feature
 from alligator.fetchers import CandidateFetcher, LiteralFetcher, ObjectFetcher
 from alligator.mongo import MongoWrapper
-from alligator.typing import Entity, RowData
+from alligator.typing import Candidate, Entity, RowData
 from alligator.utils import tokenize_text
 
 
@@ -131,7 +131,7 @@ class RowBatchProcessor:
 
         return entities, row_data_list
 
-    async def _fetch_all_candidates(self, entities: List[Entity]) -> Dict[str, List[dict]]:
+    async def _fetch_all_candidates(self, entities: List[Entity]) -> Dict[str, List[Candidate]]:
         """
         Fetch candidates for all entities, with fuzzy retry for poor results.
         """
@@ -173,10 +173,20 @@ class RowBatchProcessor:
                 if entity.value in retry_results:
                     initial_results[entity.value] = retry_results[entity.value]
 
-        return initial_results
+        candidates: Dict[str, List[Candidate]] = defaultdict(list)
+        for mention, candidates_list in initial_results.items():
+            for candidate in candidates_list:
+                candidate_dict: Dict[str, Any] = {"features": {}}
+                for key, value in candidate.items():
+                    if key in self.feature.selected_features:
+                        candidate_dict["features"][key] = value
+                    else:
+                        candidate_dict[key] = value
+                candidates[mention].append(Candidate.from_dict(candidate_dict))
+        return candidates
 
     async def _process_rows(
-        self, row_data_list: List[RowData], candidates_results: Dict[str, List[dict]]
+        self, row_data_list: List[RowData], candidates_results: Dict[str, List[Candidate]]
     ):
         db = self.get_db()
 
@@ -197,7 +207,10 @@ class RowBatchProcessor:
                 {"_id": row_data.doc_id},
                 {
                     "$set": {
-                        "candidates": training_candidates,
+                        "candidates": {
+                            str(col_id): [candidate.to_dict() for candidate in candidates]
+                            for col_id, candidates in training_candidates.items()
+                        },
                         "status": "DONE",
                         "rank_status": "TODO",
                         "rerank_status": "TODO",
@@ -205,7 +218,9 @@ class RowBatchProcessor:
                 },
             )
 
-    def _process_row_entities(self, row_data: RowData, candidates_results: Dict[str, List[dict]]):
+    def _process_row_entities(
+        self, row_data: RowData, candidates_results: Dict[str, List[Candidate]]
+    ):
         """Process entities in a row by computing features."""
         for col_idx, ner_type in row_data.ne_columns.items():
             col_idx_int = int(col_idx)
@@ -223,17 +238,16 @@ class RowBatchProcessor:
 
             # Process candidates with features
             row_tokens = set(tokenize_text(entity_value))
-            candidates_results[entity_value] = self.feature.process_candidates(
-                candidates, entity_value, row_tokens
-            )
+            self.feature.process_candidates(candidates, entity_value, row_tokens)
 
     async def _enhance_with_lamapi_features(
-        self, row_data: RowData, candidates_results: Dict[str, List[dict]]
+        self, row_data: RowData, candidates_results: Dict[str, List[Candidate]]
     ):
         """Enhance candidates with LAMAPI features."""
         # Collect all candidates by column
-        all_candidates_by_col = {}
         all_entity_ids = set()
+        entity_value_by_col = {}
+        all_candidates_by_col = {}
 
         for col_idx, ner_type in row_data.ne_columns.items():
             col_idx_int = int(col_idx)
@@ -250,13 +264,11 @@ class RowBatchProcessor:
             candidates = candidates_results.get(entity_value, [])
 
             if candidates:
+                entity_value_by_col[col_idx] = entity_value
                 all_candidates_by_col[col_idx] = candidates
                 for cand in candidates:
-                    if cand.get("id"):
-                        all_entity_ids.add(cand["id"])
-                        # Initialize tracking structures
-                        cand.setdefault("matches", defaultdict(list))
-                        cand.setdefault("predicates", defaultdict(dict))
+                    if cand.id:
+                        all_entity_ids.add(cand.id)
 
         if not all_entity_ids:
             return
@@ -279,8 +291,8 @@ class RowBatchProcessor:
             )
 
     def _rank_candidates_by_col(
-        self, row_data: RowData, candidates_results: Dict[str, List[dict]]
-    ) -> Dict[str, List[dict]]:
+        self, row_data: RowData, candidates_results: Dict[str, List[Candidate]]
+    ) -> Dict[str, List[Candidate]]:
         """Build final ranked candidate lists by column."""
         candidates_by_col = {}
 
@@ -299,7 +311,7 @@ class RowBatchProcessor:
             candidates = candidates_results.get(entity_value, [])
 
             # Rank candidates
-            ranked_candidates = sorted(candidates, key=lambda x: x.get("score", 0.0), reverse=True)
+            ranked_candidates = sorted(candidates, key=lambda x: x.score, reverse=True)
             candidates_by_col[col_idx] = ranked_candidates
 
         return candidates_by_col

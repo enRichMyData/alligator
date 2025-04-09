@@ -104,6 +104,7 @@ class Alligator:
             raise ValueError("doc_percentage_type_features must be between 0 and 1 (exclusive).")
         self._mongo_uri = kwargs.pop("mongo_uri", None) or self._DEFAULT_MONGO_URI
         self._save_output_to_csv = save_output_to_csv
+        self._dry_run = kwargs.pop("dry_run", False)
         self.mongo_wrapper = MongoWrapper(
             self._mongo_uri, self._DB_NAME, self._ERROR_LOG_COLLECTION
         )
@@ -219,7 +220,7 @@ class Alligator:
             total_rows = len(df)
             is_csv_path = False
         else:
-            sample = pd.read_csv(self.input_csv, nrows=1024)
+            sample = pd.read_csv(self.input_csv, nrows=1)
             total_rows = -1
             is_csv_path = True
 
@@ -256,19 +257,27 @@ class Alligator:
         # Step 3: Define a chunk generator function
         def get_chunks():
             """Generator that yields chunks of rows, handling both DF and CSV."""
-            if is_csv_path:
-                chunk_size = 2048
-                row_count = 0
-                for chunk in pd.read_csv(self.input_csv, chunksize=chunk_size):
-                    yield chunk, row_count
-                    row_count += len(chunk)
+            if self._dry_run:
+                if is_csv_path:
+                    yield pd.read_csv(self.input_csv, nrows=1), 0
+                else:
+                    yield df.iloc[:1], 0
             else:
-                chunk_size = 1024 if total_rows > 100000 else 2048 if total_rows > 10000 else 4096
-                total_chunks = (total_rows + chunk_size - 1) // chunk_size
-                for chunk_idx in range(total_chunks):
-                    chunk_start = chunk_idx * chunk_size
-                    chunk_end = min(chunk_start + chunk_size, total_rows)
-                    yield df.iloc[chunk_start:chunk_end], chunk_start
+                if is_csv_path:
+                    chunk_size = 2048
+                    row_count = 0
+                    for chunk in pd.read_csv(self.input_csv, chunksize=chunk_size):
+                        yield chunk, row_count
+                        row_count += len(chunk)
+                else:
+                    chunk_size = (
+                        1024 if total_rows > 100000 else 2048 if total_rows > 10000 else 4096
+                    )
+                    total_chunks = (total_rows + chunk_size - 1) // chunk_size
+                    for chunk_idx in range(total_chunks):
+                        chunk_start = chunk_idx * chunk_size
+                        chunk_end = min(chunk_start + chunk_size, total_rows)
+                        yield df.iloc[chunk_start:chunk_end], chunk_start
 
         # Step 4: Process all chunks using the generator
         processed_rows = 0

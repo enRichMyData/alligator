@@ -12,6 +12,7 @@ import pandas as pd
 from column_classifier import ColumnClassifier
 
 from alligator import PROJECT_ROOT
+from alligator.database import DatabaseAccessMixin
 from alligator.feature import Feature
 from alligator.fetchers import CandidateFetcher, LiteralFetcher, ObjectFetcher
 from alligator.ml import MLWorker
@@ -19,7 +20,7 @@ from alligator.processors import RowBatchProcessor
 from alligator.typing import ColType
 
 
-class Alligator:
+class Alligator(DatabaseAccessMixin):
     """
     Alligator entity linking system with hidden MongoDB configuration.
     """
@@ -103,6 +104,7 @@ class Alligator:
         if not (0 < self.doc_percentage_type_features <= 1):
             raise ValueError("doc_percentage_type_features must be between 0 and 1 (exclusive).")
         self._mongo_uri = kwargs.pop("mongo_uri", None) or self._DEFAULT_MONGO_URI
+        self._db_name = kwargs.pop("db_name", None) or self._DB_NAME
         self._save_output_to_csv = save_output_to_csv
         self._dry_run = kwargs.pop("dry_run", False)
         self.mongo_wrapper = MongoWrapper(
@@ -167,13 +169,6 @@ class Alligator:
 
         # Onboard data
         self.onboard_data(self.dataset_name, self.table_name, columns_type=self.columns_type)
-
-    def get_db(self):
-        """Get MongoDB database connection for current process"""
-        from alligator.mongo import MongoConnectionManager
-
-        client = MongoConnectionManager.get_client(self._mongo_uri)
-        return client[self._DB_NAME]
 
     def close_mongo_connection(self):
         """Cleanup when instance is destroyed"""

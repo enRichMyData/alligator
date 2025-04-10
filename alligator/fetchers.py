@@ -6,12 +6,13 @@ from urllib.parse import quote
 import aiohttp
 
 from alligator import MY_TIMEOUT
+from alligator.database import DatabaseAccessMixin
 from alligator.feature import Feature
 from alligator.mongo import MongoCache, MongoWrapper
 from alligator.typing import LiteralsData, ObjectsData
 
 
-class CandidateFetcher:
+class CandidateFetcher(DatabaseAccessMixin):
     """
     Extracted logic for fetching candidates.
     Takes a reference to the Alligator instance so we can access
@@ -35,13 +36,6 @@ class CandidateFetcher:
         self.input_collection = kwargs.get("input_collection", "input_data")
         self.cache_collection = kwargs.get("cache_collection", "candidate_cache")
         self.mongo_wrapper = MongoWrapper(self._mongo_uri, self._db_name)
-
-    def get_db(self):
-        """Get MongoDB database connection for current process"""
-        from alligator.mongo import MongoConnectionManager
-
-        client = MongoConnectionManager.get_client(self._mongo_uri)
-        return client[self._db_name]
 
     def get_candidate_cache(self):
         return MongoCache(self.get_db(), self.cache_collection)
@@ -186,7 +180,7 @@ class CandidateFetcher:
         return results
 
 
-class ObjectFetcher:
+class ObjectFetcher(DatabaseAccessMixin):
     """
     Fetcher for retrieving object information from LAMAPI.
     """
@@ -198,13 +192,6 @@ class ObjectFetcher:
         self._mongo_uri = kwargs.get("mongo_uri", "mongodb://gator-mongodb:27017")
         self.cache_collection = kwargs.get("cache_collection", "object_cache")
         self.mongo_wrapper = MongoWrapper(self._mongo_uri, self._db_name)
-
-    def get_db(self):
-        """Get MongoDB database connection for current process"""
-        from alligator.mongo import MongoConnectionManager
-
-        client = MongoConnectionManager.get_client(self._mongo_uri)
-        return client[self._db_name]
 
     def get_object_cache(self):
         return MongoCache(self.get_db(), self.cache_collection)
@@ -274,7 +261,7 @@ class ObjectFetcher:
         return results
 
 
-class LiteralFetcher:
+class LiteralFetcher(DatabaseAccessMixin):
     """
     Fetcher for retrieving literal information from LAMAPI.
     """
@@ -286,13 +273,6 @@ class LiteralFetcher:
         self._mongo_uri = kwargs.get("mongo_uri", "mongodb://gator-mongodb:27017")
         self.cache_collection = kwargs.get("cache_collection", "literal_cache")
         self.mongo_wrapper = MongoWrapper(self._mongo_uri, self._db_name)
-
-    def get_db(self):
-        """Get MongoDB database connection for current process"""
-        from alligator.mongo import MongoConnectionManager
-
-        client = MongoConnectionManager.get_client(self._mongo_uri)
-        return client[self._db_name]
 
     def get_literal_cache(self):
         return MongoCache(self.get_db(), self.cache_collection)

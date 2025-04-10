@@ -1,12 +1,13 @@
-import os
 from datetime import datetime
-from threading import Lock
 from typing import Any, Dict, List, Optional, TypeVar
 
-from pymongo import ASCENDING, MongoClient
+import pymongo
+from pymongo import ASCENDING
 from pymongo.collection import Collection
 from pymongo.database import Database
 from pymongo.results import DeleteResult, InsertManyResult, InsertOneResult, UpdateResult
+
+from alligator.database import DatabaseAccessMixin, DatabaseManager
 
 T = TypeVar("T")
 
@@ -29,58 +30,29 @@ class MongoCache:
 
 
 class MongoConnectionManager:
-    _instances: Dict[int, MongoClient] = {}
-    _lock: Lock = Lock()
+    """Legacy connection manager, now delegating to DatabaseManager."""
 
     @classmethod
-    def get_client(cls, mongo_uri: str) -> MongoClient:
-        pid: int = os.getpid()
-        with cls._lock:
-            if pid not in cls._instances:
-                client: MongoClient = MongoClient(
-                    mongo_uri,
-                    maxPoolSize=100,
-                    minPoolSize=8,
-                    waitQueueTimeoutMS=30000,
-                    retryWrites=True,
-                    serverSelectionTimeoutMS=30000,
-                    connectTimeoutMS=30000,
-                    socketTimeoutMS=30000,
-                )
-                cls._instances[pid] = client
-            return cls._instances[pid]
+    def get_client(cls, uri: str) -> pymongo.MongoClient:
+        """Get a MongoDB client with connection pooling."""
+        return DatabaseManager.get_connection(uri)
 
     @classmethod
-    def close_connection(cls, pid: Optional[int] = None) -> None:
-        if pid is None:
-            pid = os.getpid()
-        with cls._lock:
-            if pid in cls._instances:
-                cls._instances[pid].close()
-                del cls._instances[pid]
-
-    @classmethod
-    def close_all_connections(cls) -> None:
-        with cls._lock:
-            for client in cls._instances.values():
-                client.close()
-            cls._instances.clear()
+    def close_connection(cls) -> None:
+        """Close all connections."""
+        DatabaseManager.close_all_connections()
 
 
-class MongoWrapper:
+class MongoWrapper(DatabaseAccessMixin):
     def __init__(
         self,
         mongo_uri: str,
         db_name: str,
         error_log_collection_name: str = "error_logs",
     ) -> None:
-        self.mongo_uri: str = mongo_uri
-        self.db_name: str = db_name
+        self._mongo_uri: str = mongo_uri
+        self._db_name: str = db_name
         self.error_log_collection_name: str = error_log_collection_name
-
-    def get_db(self) -> Database:
-        client: MongoClient = MongoConnectionManager.get_client(self.mongo_uri)
-        return client[self.db_name]
 
     def update_document(
         self,

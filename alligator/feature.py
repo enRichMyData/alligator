@@ -6,7 +6,7 @@ from pymongo.collection import Collection
 from pymongo.database import Database
 
 from alligator.mongo import MongoConnectionManager
-from alligator.typing import LiteralsData, ObjectsData
+from alligator.typing import Candidate, LiteralsData, ObjectsData
 from alligator.utils import ngrams, tokenize_text
 
 DEFAULT_FEATURES = [
@@ -81,19 +81,18 @@ class Feature:
         return intersection / union if union > 0 else 0.0
 
     def process_candidates(
-        self, candidates: List[Dict[str, Any]], entity_name: Optional[str], row_tokens: Set[str]
-    ) -> List[Dict[str, Any]]:
+        self, candidates: List[Candidate], entity_name: Optional[str], row_tokens: Set[str]
+    ) -> None:
         """
         Process candidate records to calculate a set of features for each candidate.
         """
         # Use a safe version of entity_name for computations.
         safe_entity_name: str = entity_name if entity_name is not None else ""
 
-        processed_candidates: List[Dict[str, Any]] = []
         for candidate in candidates:
             # Retrieve original values, which might be None.
-            candidate_name: Optional[str] = candidate.get("name", "")
-            candidate_description: Optional[str] = candidate.get("description", "")
+            candidate_name: Optional[str] = candidate.name
+            candidate_description: Optional[str] = candidate.description
 
             # Create safe versions for computation.
             safe_candidate_name: str = candidate_name if candidate_name is not None else ""
@@ -112,58 +111,52 @@ class Feature:
                 )
 
             # Initialize all default features with default values
+            candidate_features: Dict[str, Any] = candidate.features
             features: Dict[str, Any] = {feature: 0.0 for feature in DEFAULT_FEATURES}
 
             # Now set the calculated values in the same order as DEFAULT_FEATURES
             features.update(
                 {
-                    "ambiguity_mention": candidate.get("ambiguity_mention", 0.0),
-                    "ncorrects_tokens": candidate.get("ncorrects_tokens", 0.0),
-                    "ntoken_mention": candidate.get(
+                    "ambiguity_mention": candidate_features.get("ambiguity_mention", 0.0),
+                    "ncorrects_tokens": candidate_features.get("ncorrects_tokens", 0.0),
+                    "ntoken_mention": candidate_features.get(
                         "ntoken_mention", len(safe_entity_name.split())
                     ),
-                    "ntoken_entity": candidate.get(
+                    "ntoken_entity": candidate_features.get(
                         "ntoken_entity", len(safe_candidate_name.split())
                     ),
                     "length_mention": len(safe_entity_name),
                     "length_entity": len(safe_candidate_name),
-                    "popularity": candidate.get("popularity", 0.0),
-                    "pos_score": candidate.get("pos_score", 0.0),
-                    "es_score": candidate.get("es_score", 0.0),
-                    "ed_score": candidate.get("ed_score", 0.0),
-                    "jaccard_score": candidate.get("jaccard_score", 0.0),
-                    "jaccardNgram_score": candidate.get("jaccardNgram_score", 0.0),
-                    "p_subj_ne": candidate.get("p_subj_ne", 0.0),
-                    "p_subj_lit_datatype": candidate.get("p_subj_lit_datatype", 0.0),
-                    "p_subj_lit_all_datatype": candidate.get("p_subj_lit_all_datatype", 0.0),
-                    "p_subj_lit_row": candidate.get("p_subj_lit_row", 0.0),
-                    "p_obj_ne": candidate.get("p_obj_ne", 0.0),
+                    "popularity": candidate_features.get("popularity", 0.0),
+                    "pos_score": candidate_features.get("pos_score", 0.0),
+                    "es_score": candidate_features.get("es_score", 0.0),
+                    "ed_score": candidate_features.get("ed_score", 0.0),
+                    "jaccard_score": candidate_features.get("jaccard_score", 0.0),
+                    "jaccardNgram_score": candidate_features.get("jaccardNgram_score", 0.0),
+                    "p_subj_ne": candidate_features.get("p_subj_ne", 0.0),
+                    "p_subj_lit_datatype": candidate_features.get("p_subj_lit_datatype", 0.0),
+                    "p_subj_lit_all_datatype": candidate_features.get(
+                        "p_subj_lit_all_datatype", 0.0
+                    ),
+                    "p_subj_lit_row": candidate_features.get("p_subj_lit_row", 0.0),
+                    "p_obj_ne": candidate_features.get("p_obj_ne", 0.0),
                     "desc": desc,
                     "descNgram": descNgram,
-                    "cta_t1": candidate.get("cta_t1", 0.0),
-                    "cta_t2": candidate.get("cta_t2", 0.0),
-                    "cta_t3": candidate.get("cta_t3", 0.0),
-                    "cta_t4": candidate.get("cta_t4", 0.0),
-                    "cta_t5": candidate.get("cta_t5", 0.0),
-                    "cpa_t1": candidate.get("cpa_t1", 0.0),
-                    "cpa_t2": candidate.get("cpa_t2", 0.0),
-                    "cpa_t3": candidate.get("cpa_t3", 0.0),
-                    "cpa_t4": candidate.get("cpa_t4", 0.0),
-                    "cpa_t5": candidate.get("cpa_t5", 0.0),
+                    "cta_t1": candidate_features.get("cta_t1", 0.0),
+                    "cta_t2": candidate_features.get("cta_t2", 0.0),
+                    "cta_t3": candidate_features.get("cta_t3", 0.0),
+                    "cta_t4": candidate_features.get("cta_t4", 0.0),
+                    "cta_t5": candidate_features.get("cta_t5", 0.0),
+                    "cpa_t1": candidate_features.get("cpa_t1", 0.0),
+                    "cpa_t2": candidate_features.get("cpa_t2", 0.0),
+                    "cpa_t3": candidate_features.get("cpa_t3", 0.0),
+                    "cpa_t4": candidate_features.get("cpa_t4", 0.0),
+                    "cpa_t5": candidate_features.get("cpa_t5", 0.0),
                 }
             )
 
             # Preserve the original candidate values, even if they are None
-            processed_candidates.append(
-                {
-                    "id": candidate.get("id"),
-                    "name": candidate_name,
-                    "description": candidate_description,
-                    "types": candidate.get("types"),
-                    "features": features,
-                }
-            )
-        return processed_candidates
+            candidate.features = features
 
     def get_db(self) -> Database:
         client = MongoConnectionManager.get_client(self._mongo_uri)
@@ -265,7 +258,7 @@ class Feature:
 
     def compute_entity_entity_relationships(
         self,
-        all_candidates_by_col: Dict[str, List[Dict[str, Any]]],
+        all_candidates_by_col: Dict[str, List[Candidate]],
         objects_data: Dict[str, ObjectsData],
     ) -> None:
         """
@@ -285,7 +278,7 @@ class Feature:
 
                 # Process each subject candidate
                 for subj_candidate in subj_candidates:
-                    subj_id = subj_candidate.get("id")
+                    subj_id = subj_candidate.id
                     if not subj_id or subj_id not in objects_data:
                         continue
 
@@ -294,7 +287,7 @@ class Feature:
                     objects_set = set(subj_objects.keys())
 
                     # Get object candidates' IDs in this column
-                    obj_candidate_ids = {oc.get("id") for oc in obj_candidates if oc.get("id")}
+                    obj_candidate_ids = {oc.id for oc in obj_candidates if oc.id}
                     objects_intersection = objects_set.intersection(obj_candidate_ids)
 
                     # Skip if no intersection
@@ -306,15 +299,15 @@ class Feature:
                     object_rel_score_buffer = {}
 
                     for obj_candidate in obj_candidates:
-                        obj_id = obj_candidate.get("id")
+                        obj_id = obj_candidate.id
                         if not obj_id or obj_id not in objects_intersection:
                             continue
 
                         # Calculate similarity score (average of string similarity features)
                         string_features = []
                         for feature_name in ["ed_score", "jaccard_score", "jaccardNgram_score"]:
-                            if feature_name in obj_candidate.get("features", {}):
-                                string_features.append(obj_candidate["features"][feature_name])
+                            if feature_name in obj_candidate.features:
+                                string_features.append(obj_candidate.features[feature_name])
 
                         if not string_features:
                             continue
@@ -328,10 +321,8 @@ class Feature:
                         # Calculate reverse score from subject to object
                         subj_string_features = []
                         for feature_name in ["ed_score", "jaccard_score", "jaccardNgram_score"]:
-                            if feature_name in subj_candidate.get("features", {}):
-                                subj_string_features.append(
-                                    subj_candidate["features"][feature_name]
-                                )
+                            if feature_name in subj_candidate.features:
+                                subj_string_features.append(subj_candidate.features[feature_name])
 
                         if subj_string_features:
                             score_rel = sum(subj_string_features) / len(subj_string_features)
@@ -341,26 +332,26 @@ class Feature:
 
                         # Record predicates connecting subject to object
                         for predicate in subj_objects.get(obj_id, []):
-                            subj_candidate["matches"][str(obj_col)].append(
+                            subj_candidate.matches[str(obj_col)].append(
                                 {"p": predicate, "o": obj_id, "s": p_subj_ne}
                             )
-                            subj_candidate["predicates"][str(obj_col)][predicate] = p_subj_ne
+                            subj_candidate.predicates[str(obj_col)][predicate] = p_subj_ne
 
                     # Normalize and update subject's feature
                     if obj_score_max > 0:
-                        subj_candidate["features"]["p_subj_ne"] += obj_score_max / n_ne_cols
+                        subj_candidate.features["p_subj_ne"] += obj_score_max / n_ne_cols
 
                     # Update object candidates' features
                     for obj_candidate in obj_candidates:
-                        obj_id = obj_candidate.get("id")
+                        obj_id = obj_candidate.id
                         if obj_id in object_rel_score_buffer:
-                            obj_candidate["features"]["p_obj_ne"] += (
+                            obj_candidate.features["p_obj_ne"] += (
                                 object_rel_score_buffer[obj_id] / n_ne_cols
                             )
 
     def compute_entity_literal_relationships(
         self,
-        all_candidates_by_col: Dict[str, List[Dict[str, Any]]],
+        all_candidates_by_col: Dict[str, List[Candidate]],
         lit_columns: Dict[str, str],
         row: List[Any],
         literals_data: Dict[str, LiteralsData],
@@ -385,7 +376,7 @@ class Feature:
         # Process each subject (NE) candidate
         for subj_col, subj_candidates in all_candidates_by_col.items():
             for subj_candidate in subj_candidates:
-                subj_id = subj_candidate.get("id")
+                subj_id = subj_candidate.id
                 if not subj_id or subj_id not in literals_data:
                     continue
 
@@ -421,8 +412,8 @@ class Feature:
                     else 0
                 )
 
-                subj_candidate["features"]["p_subj_lit_all_datatype"] = p_subj_lit_all_datatype
-                subj_candidate["features"]["p_subj_lit_row"] = p_subj_lit_row
+                subj_candidate.features["p_subj_lit_all_datatype"] = p_subj_lit_all_datatype
+                subj_candidate.features["p_subj_lit_row"] = p_subj_lit_row
 
                 # Process each literal column
                 for lit_col, lit_type in lit_columns.items():
@@ -486,7 +477,7 @@ class Feature:
 
                             if p_subj_lit > 0:
                                 # Record match
-                                subj_candidate["matches"][lit_col].append(
+                                subj_candidate.matches[lit_col].append(
                                     {"p": predicate, "o": kg_value, "s": p_subj_lit}
                                 )
 
@@ -494,12 +485,12 @@ class Feature:
                                 max_score = max(max_score, p_subj_lit)
 
                                 # Update predicates
-                                if predicate not in subj_candidate["predicates"][lit_col]:
-                                    subj_candidate["predicates"][lit_col][predicate] = 0
-                                subj_candidate["predicates"][lit_col][predicate] = max(
-                                    subj_candidate["predicates"][lit_col][predicate], p_subj_lit
+                                if predicate not in subj_candidate.predicates[lit_col]:
+                                    subj_candidate.predicates[lit_col][predicate] = 0
+                                subj_candidate.predicates[lit_col][predicate] = max(
+                                    subj_candidate.predicates[lit_col][predicate], p_subj_lit
                                 )
 
                     # Normalize and update feature
                     if max_score > 0:
-                        subj_candidate["features"]["p_subj_lit_datatype"] += max_score / n_lit_cols
+                        subj_candidate.features["p_subj_lit_datatype"] += max_score / n_lit_cols

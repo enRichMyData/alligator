@@ -16,6 +16,7 @@ from alligator.database import DatabaseAccessMixin
 from alligator.feature import Feature
 from alligator.fetchers import CandidateFetcher, LiteralFetcher, ObjectFetcher
 from alligator.ml import MLWorker
+from alligator.mongo import MongoWrapper
 from alligator.processors import RowBatchProcessor
 from alligator.typing import ColType
 
@@ -40,7 +41,8 @@ class Alligator(DatabaseAccessMixin):
         dataset_name: str | None = None,
         table_name: str | None = None,
         columns_type: ColType | None = None,
-        max_workers: Optional[int] = None,
+        worker_batch_size: int = 128,
+        num_workers: Optional[int] = None,
         max_candidates_in_result: int = 5,
         entity_retrieval_endpoint: Optional[str] = None,
         entity_retrieval_token: Optional[str] = None,
@@ -50,18 +52,17 @@ class Alligator(DatabaseAccessMixin):
         candidate_retrieval_limit: int = 16,
         ranker_model_path: Optional[str] = None,
         reranker_model_path: Optional[str] = None,
-        batch_size: int = 1024,
-        ml_ranking_workers: int = 2,
+        ml_worker_batch_size: int = 1024,
+        num_ml_workers: int = 2,
         top_n_for_type_freq: int = 3,
         doc_percentage_type_features: float = 0.7,
+        save_output: bool = True,
         save_output_to_csv: bool = True,
         **kwargs,
     ) -> None:
-        from alligator.mongo import MongoWrapper
-
         self.input_csv = input_csv
         self.output_csv = output_csv
-        if self.output_csv is None and save_output_to_csv:
+        if save_output and self.output_csv is None and save_output_to_csv:
             if isinstance(self.input_csv, pd.DataFrame):
                 raise ValueError(
                     "An output name must be specified is the input is a `pd.Dataframe`"
@@ -74,7 +75,8 @@ class Alligator(DatabaseAccessMixin):
         self.dataset_name = dataset_name
         self.table_name = table_name
         self.columns_type = columns_type
-        self.max_workers = max_workers or mp.cpu_count()
+        self.worker_batch_size = worker_batch_size
+        self.num_workers = num_workers or max(1, mp.cpu_count() // 2)
         self.max_candidates_in_result = max_candidates_in_result
         self.entity_retrieval_endpoint = entity_retrieval_endpoint or os.getenv(
             "ENTITY_RETRIEVAL_ENDPOINT"
@@ -97,14 +99,15 @@ class Alligator(DatabaseAccessMixin):
         self.reranker_model_path = reranker_model_path or os.path.join(
             PROJECT_ROOT, "alligator", "models", "reranker.h5"
         )
-        self.batch_size = batch_size
-        self.ml_ranking_workers = ml_ranking_workers
+        self.ml_worker_batch_size = ml_worker_batch_size
+        self.num_ml_workers = num_ml_workers
         self.top_n_for_type_freq = top_n_for_type_freq
         self.doc_percentage_type_features = doc_percentage_type_features
         if not (0 < self.doc_percentage_type_features <= 1):
             raise ValueError("doc_percentage_type_features must be between 0 and 1 (exclusive).")
         self._mongo_uri = kwargs.pop("mongo_uri", None) or self._DEFAULT_MONGO_URI
         self._db_name = kwargs.pop("db_name", None) or self._DB_NAME
+        self._save_output = save_output
         self._save_output_to_csv = save_output_to_csv
         self._dry_run = kwargs.pop("dry_run", False)
         self.mongo_wrapper = MongoWrapper(
@@ -153,7 +156,7 @@ class Alligator(DatabaseAccessMixin):
                 cache_collection=self._LITERAL_CACHE_COLLECTION,
             )
 
-        self._row_processor = RowBatchProcessor(
+        self.row_processor = RowBatchProcessor(
             self.feature,
             self.candidate_fetcher,
             self.object_fetcher,
@@ -334,7 +337,7 @@ class Alligator(DatabaseAccessMixin):
             f"({processed_rows/total_time:.1f} rows/sec)"
         )
 
-    def fetch_results(self):
+    def save_output(self):
         """Retrieves processed documents from MongoDB using memory-efficient streaming.
 
         For large tables, this avoids loading all results into memory at once.
@@ -485,7 +488,7 @@ class Alligator(DatabaseAccessMixin):
             error_log_collection_name=self._ERROR_LOG_COLLECTION,
             input_collection=self._INPUT_COLLECTION,
             model_path=self.ranker_model_path if stage == "rank" else self.reranker_model_path,
-            batch_size=self.batch_size,
+            batch_size=self.ml_worker_batch_size,
             max_candidates_in_result=self.max_candidates_in_result if stage == "rerank" else -1,
             top_n_for_type_freq=self.top_n_for_type_freq,
             features=self.feature.selected_features,
@@ -502,16 +505,13 @@ class Alligator(DatabaseAccessMixin):
             tasks_by_table.setdefault((dataset_name, table_name), []).append(doc)
 
         for (dataset_name, table_name), table_docs in tasks_by_table.items():
-            await self._row_processor.process_rows_batch(table_docs)
+            await self.row_processor.process_rows_batch(table_docs)
 
     async def worker_async(self, rank: int):
         db = self.get_db()
         input_collection = db[self._INPUT_COLLECTION]
-        total_rows = self.mongo_wrapper.count_documents(input_collection, {"status": "TODO"})
         while True:
-            todo_docs = self.claim_todo_batch(
-                input_collection, batch_size=max(1, total_rows // self.max_workers)
-            )
+            todo_docs = self.claim_todo_batch(input_collection, batch_size=self.worker_batch_size)
             if not todo_docs:
                 print("No more tasks to process.")
                 break
@@ -520,40 +520,43 @@ class Alligator(DatabaseAccessMixin):
     def worker(self, rank: int):
         asyncio.run(self.worker_async(rank))
 
-    def run(self):
+    async def run(self):
         db = self.get_db()
         input_collection = db[self._INPUT_COLLECTION]
 
         total_rows = self.mongo_wrapper.count_documents(input_collection, {"status": "TODO"})
         print(f"Found {total_rows} tasks to process.")
 
-        with mp.Pool(processes=self.max_workers) as pool:
-            pool.map(self.worker, range(self.max_workers))
+        tasks = [self.worker_async(rank) for rank in range(self.num_workers)]
+        await asyncio.gather(*tasks)
 
-        with mp.Pool(processes=self.ml_ranking_workers) as pool:
+        with mp.Pool(processes=self.num_ml_workers) as pool:
             pool.map(
                 partial(
                     self.ml_worker,
                     stage="rank",
                     global_type_counts={},
                 ),
-                range(self.ml_ranking_workers),
+                range(self.num_ml_workers),
             )
 
         global_type_counts = self.feature.compute_global_type_frequencies(
             docs_to_process=self.doc_percentage_type_features, random_sample=True
         )
 
-        with mp.Pool(processes=self.ml_ranking_workers) as pool:
+        with mp.Pool(processes=self.num_ml_workers) as pool:
             pool.map(
                 partial(
                     self.ml_worker,
                     stage="rerank",
                     global_type_counts=global_type_counts,
                 ),
-                range(self.ml_ranking_workers),
+                range(self.num_ml_workers),
             )
 
         print("All tasks have been processed.")
-        extracted_rows = self.fetch_results()
+        if self._save_output:
+            extracted_rows = self.save_output()
+        else:
+            extracted_rows = []
         return extracted_rows

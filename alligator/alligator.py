@@ -36,7 +36,7 @@ class Alligator(DatabaseAccessMixin):
 
     def __init__(
         self,
-        input_csv: str | Path | pd.DataFrame,
+        input_csv: str | Path | pd.DataFrame | None = None,
         output_csv: str | Path | None = None,
         dataset_name: str | None = None,
         table_name: str | None = None,
@@ -58,8 +58,11 @@ class Alligator(DatabaseAccessMixin):
         doc_percentage_type_features: float = 0.7,
         save_output: bool = True,
         save_output_to_csv: bool = True,
+        correct_qids: Dict[str, str] | None = None,
         **kwargs,
     ) -> None:
+        if input_csv is None:
+            raise ValueError("Input CSV or DataFrame must be provided.")
         self.input_csv = input_csv
         self.output_csv = output_csv
         if save_output and self.output_csv is None and save_output_to_csv:
@@ -109,6 +112,7 @@ class Alligator(DatabaseAccessMixin):
         self._db_name = kwargs.pop("db_name", None) or self._DB_NAME
         self._save_output = save_output
         self._save_output_to_csv = save_output_to_csv
+        self.correct_qids = correct_qids or {}
         self._dry_run = kwargs.pop("dry_run", False)
         self.mongo_wrapper = MongoWrapper(
             self._mongo_uri, self._DB_NAME, self._ERROR_LOG_COLLECTION
@@ -297,9 +301,14 @@ class Alligator(DatabaseAccessMixin):
                         "IGNORED": ignored_cols,
                     },
                     "context_columns": context_cols,
-                    "correct_qids": {},
                     "status": "TODO",
                 }
+                correct_qids = {}
+                for col_id, _ in ne_cols.items():
+                    key = f"{row_id}-{col_id}"
+                    if key in self.correct_qids:
+                        correct_qids[key] = self.correct_qids[key]
+                document["correct_qids"] = correct_qids
                 documents.append(document)
 
             if documents:
@@ -512,6 +521,7 @@ class Alligator(DatabaseAccessMixin):
         input_collection = db[self._INPUT_COLLECTION]
         while True:
             todo_docs = self.claim_todo_batch(input_collection, batch_size=self.worker_batch_size)
+            print(f"Worker {rank} processing {len(todo_docs)} tasks...")
             if not todo_docs:
                 print("No more tasks to process.")
                 break

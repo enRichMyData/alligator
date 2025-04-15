@@ -72,6 +72,7 @@ class CandidateFetcher(DatabaseAccessMixin):
             f"{self.endpoint}?name={encoded_entity_name}"
             f"&limit={self.num_candidates}&fuzzy={fuzzy}"
             f"&token={self.token}"
+            f"&cache={str(use_cache)}"
         )
         if qid:
             url += f"&ids={qid}"

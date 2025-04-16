@@ -1,10 +1,11 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, TypeVar
 
 import pymongo
 from pymongo import ASCENDING
 from pymongo.collection import Collection
 from pymongo.database import Database
+from pymongo.errors import CollectionInvalid
 from pymongo.results import DeleteResult, InsertManyResult, InsertOneResult, UpdateResult
 
 from alligator.database import DatabaseAccessMixin, DatabaseManager
@@ -13,20 +14,44 @@ T = TypeVar("T")
 
 
 class MongoCache:
-    """MongoDB-based cache for storing key-value pairs."""
+    """MongoDB-based cache for storing key-value pairs with TTL and capped collection."""
 
-    def __init__(self, db: Database, collection_name: str) -> None:
+    def __init__(
+        self,
+        db: Database,
+        collection_name: str,
+        ttl_seconds: int = 7200,
+        capped_size_bytes: int = 524288000,  # 500 MB
+        capped_max_docs: int = 131072,  # 2^17
+    ) -> None:
+        # Create capped collection if it doesn't exist
+        if collection_name not in db.list_collection_names():
+            try:
+                db.create_collection(
+                    collection_name, capped=True, size=capped_size_bytes, max=capped_max_docs
+                )
+            except CollectionInvalid:
+                pass
         self.collection: Collection = db[collection_name]
+
+        # Ensure TTL index on 'createdAt'
+        self.collection.create_index("createdAt", expireAfterSeconds=ttl_seconds)
+
+        # Ensure unique index on '_id'
         self.collection.create_index("key", unique=True)
 
-    def get(self, key: str) -> Optional[Any]:
-        result: Optional[Dict[str, Any]] = self.collection.find_one({"key": key})
-        if result:
-            return result["value"]
+    def get(self, cache_key: str) -> Any | None:
+        doc = self.collection.find_one({"key": cache_key})
+        if doc:
+            return doc["value"]
         return None
 
-    def put(self, key: str, value: Any) -> None:
-        self.collection.update_one({"key": key}, {"$set": {"value": value}}, upsert=True)
+    def put(self, cache_key: str, value: Any):
+        self.collection.replace_one(
+            {"key": cache_key},
+            {"key": cache_key, "value": value, "createdAt": datetime.now(timezone.utc)},
+            upsert=True,
+        )
 
 
 class MongoConnectionManager:

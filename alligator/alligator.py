@@ -55,7 +55,7 @@ class Alligator(DatabaseAccessMixin):
         ml_worker_batch_size: int = 1024,
         num_ml_workers: int = 2,
         top_n_for_type_freq: int = 3,
-        doc_percentage_type_features: float = 0.7,
+        doc_percentage_type_features: float = 1.0,
         save_output: bool = True,
         save_output_to_csv: bool = True,
         correct_qids: Dict[str, str] | None = None,
@@ -541,6 +541,7 @@ class Alligator(DatabaseAccessMixin):
         await asyncio.gather(*tasks)
 
         with mp.Pool(processes=self.num_ml_workers) as pool:
+            self.candidate_fetcher.cache = None
             pool.map(
                 partial(
                     self.ml_worker,
@@ -551,10 +552,11 @@ class Alligator(DatabaseAccessMixin):
             )
 
         global_type_counts = self.feature.compute_global_type_frequencies(
-            docs_to_process=self.doc_percentage_type_features, random_sample=True
+            docs_to_process=self.doc_percentage_type_features, random_sample=False
         )
 
         with mp.Pool(processes=self.num_ml_workers) as pool:
+            self.candidate_fetcher.cache = None
             pool.map(
                 partial(
                     self.ml_worker,

@@ -1,5 +1,8 @@
 import asyncio
+import hashlib
+import json
 import traceback
+from functools import lru_cache
 from typing import Dict, List, Optional
 from urllib.parse import quote
 
@@ -10,6 +13,23 @@ from alligator.database import DatabaseAccessMixin
 from alligator.feature import Feature
 from alligator.mongo import MongoCache, MongoWrapper
 from alligator.typing import LiteralsData, ObjectsData
+
+
+@lru_cache(maxsize=int(2**31) - 1)
+def get_cache_key(**kwargs) -> str:
+    """
+    Generate a unique cache key based on arbitrary keyword arguments.
+
+    Args:
+        **kwargs: Arbitrary keyword arguments representing request parameters.
+
+    Returns:
+        str: A SHA256 hash string uniquely representing the parameter set.
+    """
+    # Serialize parameters with sorted keys for consistency
+    serialized = json.dumps(kwargs, sort_keys=True, default=str)
+    key = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    return key
 
 
 class CandidateFetcher(DatabaseAccessMixin):
@@ -25,6 +45,7 @@ class CandidateFetcher(DatabaseAccessMixin):
         token: str,
         num_candidates: int,
         feature: Feature,
+        use_cache: bool = True,
         **kwargs,
     ):
         self.endpoint = endpoint
@@ -36,9 +57,16 @@ class CandidateFetcher(DatabaseAccessMixin):
         self.input_collection = kwargs.get("input_collection", "input_data")
         self.cache_collection = kwargs.get("cache_collection", "candidate_cache")
         self.mongo_wrapper = MongoWrapper(self._mongo_uri, self._db_name)
+        self.use_cache = use_cache
+        self.cache = None
 
     def get_candidate_cache(self):
-        return MongoCache(self.get_db(), self.cache_collection)
+        if self.use_cache:
+            if self.cache is None:
+                self.cache = MongoCache(self.get_db(), self.cache_collection)
+            return self.cache
+        else:
+            return None
 
     async def fetch_candidates_batch(
         self,
@@ -62,7 +90,14 @@ class CandidateFetcher(DatabaseAccessMixin):
         return await self.fetch_candidates_batch_async(entities, row_texts, fuzzies, qids)
 
     async def _fetch_candidates(
-        self, entity_name, row_text, fuzzy, qid, session, use_cache: bool = True
+        self,
+        entity_name,
+        row_text,
+        fuzzy,
+        qid,
+        session,
+        use_cache: bool = False,
+        kind: str = "entity",
     ):
         """
         This used to be Alligator._fetch_candidates. Logic unchanged.
@@ -72,6 +107,7 @@ class CandidateFetcher(DatabaseAccessMixin):
             f"{self.endpoint}?name={encoded_entity_name}"
             f"&limit={self.num_candidates}&fuzzy={fuzzy}"
             f"&token={self.token}"
+            f"&kind={kind}"
             f"&cache={str(use_cache)}"
         )
         if qid:
@@ -101,21 +137,19 @@ class CandidateFetcher(DatabaseAccessMixin):
                         )
 
                     # Merge with existing cache if present
-                    cache = self.get_candidate_cache()
-                    cache_key = f"{entity_name}_{fuzzy}"
-                    cached_result = cache.get(cache_key)
+                    if cache := self.get_candidate_cache():
+                        cache_key = get_cache_key(
+                            endpoint=self.endpoint,
+                            token=self.token,
+                            num_candidates=self.num_candidates,
+                            entity_name=entity_name,
+                            fuzzy=fuzzy,
+                            qid=qid,
+                            kind=kind,
+                        )
+                        cache.put(cache_key, fetched_candidates)
 
-                    if cached_result:
-                        all_candidates = {c["id"]: c for c in cached_result if "id" in c}
-                        for c in fetched_candidates:
-                            if c.get("id"):
-                                all_candidates[c["id"]] = c
-                        merged_candidates = list(all_candidates.values())
-                    else:
-                        merged_candidates = fetched_candidates
-
-                    cache.put(cache_key, merged_candidates)
-                    return entity_name, merged_candidates
+                    return entity_name, fetched_candidates
 
             except Exception:
                 if attempts == 4:
@@ -136,14 +170,25 @@ class CandidateFetcher(DatabaseAccessMixin):
         This used to be Alligator.fetch_candidates_batch_async.
         """
         results = {}
-        cache = self.get_candidate_cache()
         to_fetch = []
 
         # Decide which entities need to be fetched
         for entity_name, fuzzy, row_text, qid_str in zip(entities, fuzzies, row_texts, qids):
-            cache_key = f"{entity_name}_{fuzzy}"
-            cached_result = cache.get(cache_key)
             forced_qids = qid_str.split() if qid_str else []
+
+            if cache := self.get_candidate_cache():
+                cache_key = get_cache_key(
+                    endpoint=self.endpoint,
+                    token=self.token,
+                    num_candidates=self.num_candidates,
+                    entity_name=entity_name,
+                    fuzzy=fuzzy,
+                    qid=qid_str,
+                    kind="entity",
+                )
+                cached_result = cache.get(cache_key)
+            else:
+                cached_result = None
 
             if cached_result is not None:
                 if forced_qids:

@@ -184,6 +184,7 @@ class Feature(DatabaseAccessMixin):
             "dataset_name": self.dataset_name,
             "table_name": self.table_name,
             "status": "DONE",
+            "rank_status": "DONE",
             "candidates": {"$exists": True},
         }
         projection = {"candidates": 1}

@@ -136,7 +136,8 @@ class MLWorker(DatabaseAccessMixin):
         # 3) If no candidates, mark these docs as 'ML_DONE'
         if not all_candidates:
             input_collection.update_many(
-                {"_id": {"$in": [d["_id"] for d in batch_docs]}}, {"$set": {"status": "ML_DONE"}}
+                {"_id": {"$in": [d["_id"] for d in batch_docs]}},
+                {"$set": {f"{self.stage}_status": "ML_DONE"}},
             )
             return len(batch_docs)
 

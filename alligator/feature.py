@@ -1,5 +1,6 @@
 from collections import Counter, defaultdict
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Union, Tuple
+import random
 
 import pandas as pd
 from pymongo.collection import Collection
@@ -158,245 +159,119 @@ class Feature(DatabaseAccessMixin):
             # Preserve the original candidate values, even if they are None
             candidate.features = features
 
-    def compute_cpa_features(self, candidates_by_col: Dict[str, List[Candidate]]) -> None:
+    def compute_global_frequencies(
+        self, docs_to_process: float = 1.0, random_sample: bool = False
+    ) -> Tuple[Dict[Any, Counter], Dict[Any, Counter]]:
         """
-        Compute CPA features for candidates after predicates have been populated.
-        This should be called after entity-entity and entity-literal relationships
-        have been computed, which populates the predicates.
-        """
-        for col_id, candidates in candidates_by_col.items():
-            for candidate in candidates:
-                if not candidate.predicates:
-                    continue
-
-                # Gather all predicates and their scores from all related columns
-                all_predicate_scores = []
-
-                for rel_col_id, predicates in candidate.predicates.items():
-                    for pred_id, score in predicates.items():
-                        # If we have global predicate frequencies, use them to weight the scores
-                        if (
-                            self._predicate_frequencies
-                            and col_id in self._predicate_frequencies
-                            and pred_id in self._predicate_frequencies[col_id]
-                        ):
-                            global_freq = self._predicate_frequencies[col_id][pred_id]
-                            combined_score = global_freq * score
-                        else:
-                            # If no global frequency data, just use the predicate's score
-                            combined_score = score
-
-                        all_predicate_scores.append((pred_id, combined_score))
-
-                if not all_predicate_scores:
-                    continue
-
-                # Sort predicates by combined score in descending order
-                sorted_predicates = sorted(all_predicate_scores, key=lambda x: x[1], reverse=True)
-
-                # Take top 5 predicate scores for CPA features
-                cpa_values = [0.0] * 5
-                for i in range(min(5, len(sorted_predicates))):
-                    cpa_values[i] = round(sorted_predicates[i][1], 3)
-
-                # Update CPA features in the candidate
-                candidate.features["cpa_t1"] = cpa_values[0]
-                candidate.features["cpa_t2"] = cpa_values[1]
-                candidate.features["cpa_t3"] = cpa_values[2]
-                candidate.features["cpa_t4"] = cpa_values[3]
-                candidate.features["cpa_t5"] = cpa_values[4]
-
-    def compute_global_predicate_frequencies(
-        self,
-        docs_to_process: Optional[float] = None,
-        random_sample: bool = False,
-        doc_range: Optional[tuple] = None,
-    ) -> Dict[str, Dict[str, float]]:
-        """Compute predicate frequencies across candidate documents.
+        Compute global type frequencies (CTA) and predicate frequencies (CPA) across all columns.
 
         Args:
-            docs_to_process: Percentage of documents to process. If None, processes all documents.
-                Use this to limit computation time for very large datasets.
-            random_sample: If True and docs_to_process is specified, samples documents randomly.
-            doc_range: Optional tuple (start, end) to process a specific document range.
-                Takes precedence over random_sample.
+            docs_to_process: Fraction of documents to use (0.0-1.0)
+            random_sample: Whether to randomly sample documents
 
         Returns:
-            Dictionary mapping column indexes to predicate frequency dictionaries.
+            Tuple of (type_frequencies, predicate_frequencies) where each is a dict
+            mapping column indices to Counter objects with frequency data
         """
-        col: Collection = self.get_db()[self.input_collection]
-        predicate_freq_by_column = defaultdict(lambda: defaultdict(float))
-        predicate_count_by_column = defaultdict(Counter)
-        rows_count_by_column = Counter()
+        db = self.get_db()
+        input_collection = db[self.input_collection]
 
-        # Base query to find documents with candidates
-        match_query = {
+        # Get the count of documents
+        total_docs = input_collection.count_documents({
+            "dataset_name": self.dataset_name,
+            "table_name": self.table_name,
+            "status": "DONE",  # Only consider processed documents
+        })
+
+        # Calculate how many documents to process
+        docs_to_get = int(total_docs * docs_to_process)
+        if docs_to_get == 0 and total_docs > 0:
+            docs_to_get = 1
+
+        # Build the query
+        query = {
             "dataset_name": self.dataset_name,
             "table_name": self.table_name,
             "status": "DONE",
-            "candidates": {"$exists": True},
         }
-        projection = {"candidates": 1}
 
-        # Choose sampling strategy (similar to compute_global_type_frequencies)
-        if doc_range:
-            start, end = doc_range
-            print(f"Processing documents in range {start} to {end} for predicate frequencies")
-            cursor = col.find(match_query, projection).skip(start).limit(end - start)
-        elif docs_to_process and random_sample:
-            total_docs = col.count_documents(match_query)
-            max_docs = max(1, int(total_docs * docs_to_process))
-            print(f"Computing predicate frequencies by randomly sampling {max_docs} documents")
-            pipeline = [
-                {"$match": match_query},
-                {"$sample": {"size": max_docs}},
-                {"$project": projection},
-            ]
-            cursor = col.aggregate(pipeline)
+        # Fetch documents
+        cursor = input_collection.find(
+            query,
+            projection={"candidates": 1, "classified_columns.NE": 1}
+        )
+
+        # Initialize document counter
+        n_docs = 0
+        
+        # Sample if needed
+        if random_sample and docs_to_process < 1.0:
+            docs = list(cursor)
+            random.shuffle(docs)
+            docs = docs[:docs_to_get]
+            n_docs = len(docs)  # Set counter for random sample case
         else:
-            cursor = col.find(match_query, projection)
-            if docs_to_process:
-                total_docs = col.count_documents(match_query)
-                max_docs = max(1, int(total_docs * docs_to_process))
-                print(f"Computing predicate frequencies by processing first {max_docs} documents")
-                cursor = cursor.limit(max_docs)
-            else:
-                print("Computing predicate frequencies by processing all matching documents")
+            docs = cursor.limit(docs_to_get)
 
-        # Process documents to calculate predicate frequencies
-        doc_count = 0
-        for doc in cursor:
-            doc_count += 1
-            candidates_by_column: Dict[str, List[Dict[str, Any]]] = doc["candidates"]
+        # Initialize counters
+        type_frequencies = defaultdict(Counter)
+        predicate_frequencies = defaultdict(Counter)
 
-            for col_idx, candidates_list in candidates_by_column.items():
-                rows_count_by_column[col_idx] += 1
+        # Process each document
+        for doc in docs:
+            # Increment document counter if not using random sample
+            if not (random_sample and docs_to_process < 1.0):
+                n_docs += 1
+                
+            ne_cols = doc.get("classified_columns", {}).get("NE", {})
+            candidates_by_column = doc.get("candidates", {})
 
-                # Consider only top candidates for frequency computation
-                top_candidates = candidates_list[: self.top_n_for_type_freq]
-                processed_predicates = set()  # Track processed predicates to avoid duplicates
+            # Process each NE column
+            for col_idx in ne_cols:
+                candidates = candidates_by_column.get(col_idx, [])
 
-                for candidate in top_candidates:
-                    if "predicates" not in candidate:
-                        continue
+                # Skip if no candidates
+                if not candidates:
+                    continue
 
-                    for rel_col, predicates in candidate["predicates"].items():
-                        for pred_id, score in predicates.items():
-                            if pred_id in processed_predicates:
-                                continue
+                # Track types and predicates we've seen for this cell (to avoid double-counting)
+                seen_types = set()
+                seen_predicates = set()
 
-                            predicate_count_by_column[col_idx][pred_id] += score
-                            processed_predicates.add(pred_id)
+                # Consider top 3 candidates (as in FeaturesExtractionRevision)
+                for candidate in candidates[:3]:
+                    # Process types (CTA)
+                    for type_obj in candidate.get("types", []):
+                        type_id = type_obj.get("id")
+                        if type_id and type_id not in seen_types:
+                            type_frequencies[col_idx][type_id] += 1
+                            seen_types.add(type_id)
 
-        # Normalize frequencies
-        for col_idx, pred_counter in predicate_count_by_column.items():
-            row_count = rows_count_by_column[col_idx]
-            if row_count == 0:
-                continue
+                    # Process predicates (CPA)
+                    predicates = candidate.get("predicates", {})
+                    for rel_col_idx, rel_predicates in predicates.items():
+                        for pred_id, pred_value in rel_predicates.items():
+                            if pred_id and pred_id not in seen_predicates:
+                                # Update global predicate counter
+                                predicate_frequencies[col_idx][pred_id] += 1 * pred_value
+                                seen_predicates.add(pred_id)
 
-            for pred_id, count in pred_counter.items():
-                predicate_freq_by_column[col_idx][pred_id] = count / row_count
+        # Normalize frequencies by document count
+        if n_docs > 0:
+            for col_idx in type_frequencies:
+                for type_id in type_frequencies[col_idx]:
+                    type_frequencies[col_idx][type_id] = round(type_frequencies[col_idx][type_id] / n_docs, 3)
 
-        print(f"Computed predicate frequencies from {doc_count} documents")
+            for col_idx in predicate_frequencies:
+                for pred_id in predicate_frequencies[col_idx]:
+                    predicate_frequencies[col_idx][pred_id] = round(predicate_frequencies[col_idx][pred_id] / n_docs, 3)
 
-        # Store frequencies for later use in process_candidates
-        self._predicate_frequencies = dict(predicate_freq_by_column)
+        return type_frequencies, predicate_frequencies
 
-        return dict(predicate_freq_by_column)
-
-    def compute_global_type_frequencies(
-        self,
-        docs_to_process: Optional[float] = None,
-        random_sample: bool = False,
-        doc_range: Optional[tuple] = None,
-    ) -> Dict[Any, Counter]:
-        """Compute type frequencies across candidate documents.
-
-        Args:
-            docs_to_process: Percentage of documents to process. If None, processes all documents.
-                Use this to limit computation time for very large datasets.
-            random_sample: If True and docs_to_process is specified, samples documents randomly.
-            doc_range: Optional tuple (start, end) to process a specific document range.
-                Takes precedence over random_sample.
-
-        Returns:
-            Dictionary mapping column indexes to type frequency counters.
-        """
-        col: Collection = self.get_db()[self.input_collection]
-        type_freq_by_column = defaultdict(Counter)
-        rows_count_by_column = Counter()
-
-        # Base query to find documents with candidates
-        match_query = {
-            "dataset_name": self.dataset_name,
-            "table_name": self.table_name,
-            "status": "DONE",
-            "rank_status": "DONE",
-            "candidates": {"$exists": True},
-        }
-        projection = {"candidates": 1}
-
-        # Choose sampling strategy
-        if doc_range:
-            start, end = doc_range
-            print(f"Processing documents in range {start} to {end}")
-            cursor = col.find(match_query, projection).skip(start).limit(end - start)
-        elif docs_to_process and random_sample:
-            # Use aggregation pipeline with $sample for random sampling
-            total_docs = col.count_documents(match_query)
-            max_docs = max(1, int(total_docs * docs_to_process))
-            print(f"Computing type-frequency features by randomly sampling {max_docs} documents")
-            pipeline = [
-                {"$match": match_query},
-                {"$sample": {"size": max_docs}},
-                {"$project": projection},
-            ]
-            cursor = col.aggregate(pipeline)
-        else:
-            # Simple limit if specified
-            cursor = col.find(match_query, projection)
-            if docs_to_process:
-                total_docs = col.count_documents(match_query)
-                max_docs = max(1, int(total_docs * docs_to_process))
-                print(
-                    f"Computing type-frequency features by processing first {max_docs} documents"
-                )
-                cursor = cursor.limit(max_docs)
-            else:
-                print("Computing type-frequency features by processing all matching documents")
-
-        # Process documents to calculate type frequencies
-        doc_count = 0
-        for doc in cursor:
-            doc_count += 1
-            candidates_by_column: Dict[Any, List[Dict[str, Any]]] = doc["candidates"]
-
-            for col_idx, candidates in candidates_by_column.items():
-                top_candidates = candidates[: self.top_n_for_type_freq]
-                row_qids = set()
-
-                for cand in top_candidates:
-                    for t_dict in cand.get("types", []):
-                        qid = t_dict.get("id")
-                        if qid:
-                            row_qids.add(qid)
-
-                for qid in row_qids:
-                    type_freq_by_column[col_idx][qid] += 1
-
-                rows_count_by_column[col_idx] += 1
-
-        # Normalize frequencies
-        for col_idx, freq_counter in type_freq_by_column.items():
-            row_count: int = rows_count_by_column[col_idx]
-            if row_count == 0:
-                continue
-            # Convert each type's raw count to a ratio in [0..1]
-            for qid in freq_counter:
-                freq_counter[qid] = freq_counter[qid] / row_count
-
-        print(f"Computed type frequencies from {doc_count} documents")
-        return type_freq_by_column
+    def compute_global_type_frequencies(self, docs_to_process=1.0, random_sample=False):
+        """Legacy method that calls compute_global_frequencies and returns only type frequencies."""
+        type_frequencies, _ = self.compute_global_frequencies(docs_to_process, random_sample)
+        return type_frequencies
 
     def compute_entity_entity_relationships(
         self,

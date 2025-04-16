@@ -489,7 +489,7 @@ class Alligator(DatabaseAccessMixin):
         self,
         rank: int,
         stage: str = "rank",
-        global_type_counts: Dict[Any, Counter] = {},
+        global_frequencies=(None, None),
     ):
         """Unified wrapper function for ML workers"""
         worker = MLWorker(
@@ -507,7 +507,7 @@ class Alligator(DatabaseAccessMixin):
             mongo_uri=self._mongo_uri,
             db_name=self._DB_NAME,
         )
-        return worker.run(global_type_counts=global_type_counts)
+        return worker.run(global_frequencies=global_frequencies)
 
     async def process_batch(self, docs):
         tasks_by_table = {}
@@ -543,26 +543,29 @@ class Alligator(DatabaseAccessMixin):
         tasks = [self.worker_async(rank) for rank in range(self.num_workers)]
         await asyncio.gather(*tasks)
 
+        # First ML ranking stage (no global frequencies needed)
         with mp.Pool(processes=self.num_ml_workers) as pool:
             pool.map(
                 partial(
                     self.ml_worker,
                     stage="rank",
-                    global_type_counts={},
+                    global_frequencies=(None, None),  # Empty tuple for first stage
                 ),
                 range(self.num_ml_workers),
             )
 
-        global_type_counts = self.feature.compute_global_type_frequencies(
+        # Compute both type and predicate frequencies
+        type_frequencies, predicate_frequencies = self.feature.compute_global_frequencies(
             docs_to_process=self.doc_percentage_type_features, random_sample=False
         )
-
+        
+        # Second ML ranking stage with global frequencies
         with mp.Pool(processes=self.num_ml_workers) as pool:
             pool.map(
                 partial(
                     self.ml_worker,
                     stage="rerank",
-                    global_type_counts=global_type_counts,
+                    global_frequencies=(type_frequencies, predicate_frequencies),
                 ),
                 range(self.num_ml_workers),
             )

@@ -113,9 +113,6 @@ class Feature(DatabaseAccessMixin):
             # Initialize all default features with default values
             candidate_features: Dict[str, Any] = candidate.features
             features: Dict[str, Any] = {feature: 0.0 for feature in DEFAULT_FEATURES}
-
-            # Initialize CTA and CPA values
-            cta_values = [0.0] * 5  # Default values for CTA features
             
             # Now set the calculated values in the same order as DEFAULT_FEATURES
             features.update({
@@ -144,11 +141,11 @@ class Feature(DatabaseAccessMixin):
                 "p_obj_ne": candidate_features.get("p_obj_ne", 0.0),
                 "desc": desc,
                 "descNgram": descNgram,
-                "cta_t1": candidate_features.get("cta_t1", cta_values[0]),
-                "cta_t2": candidate_features.get("cta_t2", cta_values[1]),
-                "cta_t3": candidate_features.get("cta_t3", cta_values[2]),
-                "cta_t4": candidate_features.get("cta_t4", cta_values[3]),
-                "cta_t5": candidate_features.get("cta_t5", cta_values[4]),
+                "cta_t1": candidate_features.get("cta_t1", 0.0),
+                "cta_t2": candidate_features.get("cta_t2", 0.0),
+                "cta_t3": candidate_features.get("cta_t3", 0.0),
+                "cta_t4": candidate_features.get("cta_t4", 0.0),
+                "cta_t5": candidate_features.get("cta_t5", 0.0),
                 "cpa_t1": candidate_features.get("cpa_t1", 0.0),
                 "cpa_t2": candidate_features.get("cpa_t2", 0.0),
                 "cpa_t3": candidate_features.get("cpa_t3", 0.0),

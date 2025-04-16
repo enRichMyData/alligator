@@ -58,15 +58,13 @@ class CandidateFetcher(DatabaseAccessMixin):
         self.cache_collection = kwargs.get("cache_collection", "candidate_cache")
         self.mongo_wrapper = MongoWrapper(self._mongo_uri, self._db_name)
         self.use_cache = use_cache
-        self.cache = None
-
-    def get_candidate_cache(self):
         if self.use_cache:
-            if self.cache is None:
-                self.cache = MongoCache(self.get_db(), self.cache_collection)
-            return self.cache
+            self.cache = MongoCache(self._mongo_uri, self._db_name, self.cache_collection)
         else:
-            return None
+            self.cache = None
+
+    def get_candidate_cache(self) -> Optional[MongoCache]:
+        return self.cache
 
     async def fetch_candidates_batch(
         self,
@@ -238,9 +236,10 @@ class ObjectFetcher(DatabaseAccessMixin):
         self._mongo_uri = kwargs.get("mongo_uri", "mongodb://gator-mongodb:27017")
         self.cache_collection = kwargs.get("cache_collection", "object_cache")
         self.mongo_wrapper = MongoWrapper(self._mongo_uri, self._db_name)
+        self.cache = MongoCache(self._mongo_uri, self._db_name, self.cache_collection)
 
     def get_object_cache(self):
-        return MongoCache(self.get_db(), self.cache_collection)
+        return self.cache
 
     async def fetch_objects(self, entity_ids: List[str]) -> Dict[str, ObjectsData]:
         """
@@ -319,9 +318,10 @@ class LiteralFetcher(DatabaseAccessMixin):
         self._mongo_uri = kwargs.get("mongo_uri", "mongodb://gator-mongodb:27017")
         self.cache_collection = kwargs.get("cache_collection", "literal_cache")
         self.mongo_wrapper = MongoWrapper(self._mongo_uri, self._db_name)
+        self.cache = MongoCache(self._mongo_uri, self._db_name, self.cache_collection)
 
     def get_literal_cache(self):
-        return MongoCache(self.get_db(), self.cache_collection)
+        return self.cache
 
     async def fetch_literals(self, entity_ids: List[str]) -> Dict[str, LiteralsData]:
         """

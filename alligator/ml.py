@@ -51,7 +51,7 @@ class MLWorker(DatabaseAccessMixin):
         self.mongo_wrapper: MongoWrapper = MongoWrapper(
             self._mongo_uri,
             self._db_name,
-            error_log_collection_name=self.error_logs_collection,
+            error_log_collection=self.error_logs_collection,
         )
 
     def load_ml_model(self) -> "Model":

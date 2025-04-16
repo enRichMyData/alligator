@@ -115,7 +115,10 @@ class Alligator(DatabaseAccessMixin):
         self.correct_qids = correct_qids or {}
         self._dry_run = kwargs.pop("dry_run", False)
         self.mongo_wrapper = MongoWrapper(
-            self._mongo_uri, self._DB_NAME, self._ERROR_LOG_COLLECTION
+            self._mongo_uri,
+            self._DB_NAME,
+            self._INPUT_COLLECTION,
+            self._ERROR_LOG_COLLECTION,
         )
         self.feature = Feature(
             dataset_name,
@@ -494,7 +497,7 @@ class Alligator(DatabaseAccessMixin):
             table_name=self.table_name,
             dataset_name=self.dataset_name,
             stage=stage,
-            error_log_collection_name=self._ERROR_LOG_COLLECTION,
+            error_log_collection=self._ERROR_LOG_COLLECTION,
             input_collection=self._INPUT_COLLECTION,
             model_path=self.ranker_model_path if stage == "rank" else self.reranker_model_path,
             batch_size=self.ml_worker_batch_size,
@@ -541,7 +544,6 @@ class Alligator(DatabaseAccessMixin):
         await asyncio.gather(*tasks)
 
         with mp.Pool(processes=self.num_ml_workers) as pool:
-            self.candidate_fetcher.cache = None
             pool.map(
                 partial(
                     self.ml_worker,
@@ -556,7 +558,6 @@ class Alligator(DatabaseAccessMixin):
         )
 
         with mp.Pool(processes=self.num_ml_workers) as pool:
-            self.candidate_fetcher.cache = None
             pool.map(
                 partial(
                     self.ml_worker,

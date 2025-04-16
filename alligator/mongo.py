@@ -5,7 +5,6 @@ import pymongo
 from pymongo import ASCENDING
 from pymongo.collection import Collection
 from pymongo.database import Database
-from pymongo.errors import CollectionInvalid
 from pymongo.results import DeleteResult, InsertManyResult, InsertOneResult, UpdateResult
 
 from alligator.database import DatabaseAccessMixin, DatabaseManager
@@ -13,41 +12,49 @@ from alligator.database import DatabaseAccessMixin, DatabaseManager
 T = TypeVar("T")
 
 
-class MongoCache:
+class MongoCache(DatabaseAccessMixin):
     """MongoDB-based cache for storing key-value pairs with TTL and capped collection."""
 
     def __init__(
         self,
-        db: Database,
+        mongo_uri: str,
+        db_name: str,
         collection_name: str,
-        ttl_seconds: int = 7200,
+        ttl_seconds: int | None = 7200,
         capped_size_bytes: int = 524288000,  # 500 MB
         capped_max_docs: int = 131072,  # 2^17
     ) -> None:
-        # Create capped collection if it doesn't exist
+        self._mongo_uri: str = mongo_uri
+        self._db_name: str = db_name
+        self._collection_name = collection_name
+
+        # Create collection
+        db = self.get_db()
         if collection_name not in db.list_collection_names():
-            try:
+            if ttl_seconds is None:
                 db.create_collection(
                     collection_name, capped=True, size=capped_size_bytes, max=capped_max_docs
                 )
-            except CollectionInvalid:
-                pass
-        self.collection: Collection = db[collection_name]
+            else:
+                db.create_collection(collection_name, capped=False)
 
-        # Ensure TTL index on 'createdAt'
-        self.collection.create_index("createdAt", expireAfterSeconds=ttl_seconds)
+        # Create indexes
+        collection = db[collection_name]
+        if ttl_seconds is not None:
+            collection.create_index("createdAt", expireAfterSeconds=ttl_seconds)
+        collection.create_index("key", unique=True)
 
-        # Ensure unique index on '_id'
-        self.collection.create_index("key", unique=True)
+    def get_collection(self) -> Collection:
+        return self.get_db()[self._collection_name]
 
     def get(self, cache_key: str) -> Any | None:
-        doc = self.collection.find_one({"key": cache_key})
+        doc = self.get_collection().find_one({"key": cache_key})
         if doc:
             return doc["value"]
         return None
 
     def put(self, cache_key: str, value: Any):
-        self.collection.replace_one(
+        self.get_collection().replace_one(
             {"key": cache_key},
             {"key": cache_key, "value": value, "createdAt": datetime.now(timezone.utc)},
             upsert=True,
@@ -73,11 +80,13 @@ class MongoWrapper(DatabaseAccessMixin):
         self,
         mongo_uri: str,
         db_name: str,
-        error_log_collection_name: str = "error_logs",
+        input_collection: str = "input_data",
+        error_log_collection: str = "error_logs",
     ) -> None:
         self._mongo_uri: str = mongo_uri
         self._db_name: str = db_name
-        self.error_log_collection_name: str = error_log_collection_name
+        self.input_collection_name: str = input_collection
+        self.error_log_collection: str = error_log_collection
 
     def update_document(
         self,
@@ -151,7 +160,7 @@ class MongoWrapper(DatabaseAccessMixin):
         self, level: str, message: str, trace: Optional[str] = None, attempt: Optional[int] = None
     ) -> None:
         db: Database = self.get_db()
-        log_collection: Collection = db[self.error_log_collection_name]
+        log_collection: Collection = db[self.error_log_collection]
         log_entry: Dict[str, Any] = {
             "timestamp": datetime.now(),
             "level": level,

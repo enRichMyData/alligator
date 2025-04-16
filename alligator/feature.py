@@ -268,11 +268,6 @@ class Feature(DatabaseAccessMixin):
 
         return type_frequencies, predicate_frequencies
 
-    def compute_global_type_frequencies(self, docs_to_process=1.0, random_sample=False):
-        """Legacy method that calls compute_global_frequencies and returns only type frequencies."""
-        type_frequencies, _ = self.compute_global_frequencies(docs_to_process, random_sample)
-        return type_frequencies
-
     def compute_entity_entity_relationships(
         self,
         all_candidates_by_col: Dict[str, List[Candidate]],

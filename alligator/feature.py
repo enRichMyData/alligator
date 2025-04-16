@@ -3,11 +3,10 @@ from typing import Any, Dict, List, Optional, Set
 
 import pandas as pd
 from pymongo.collection import Collection
-from pymongo.database import Database
 
-from alligator.mongo import MongoConnectionManager
+from alligator.database import DatabaseAccessMixin
 from alligator.typing import Candidate, LiteralsData, ObjectsData
-from alligator.utils import ngrams, tokenize_text
+from alligator.utils import ColumnHelper, ngrams, tokenize_text
 
 DEFAULT_FEATURES = [
     "ambiguity_mention",
@@ -42,7 +41,7 @@ DEFAULT_FEATURES = [
 ]
 
 
-class Feature:
+class Feature(DatabaseAccessMixin):
     def __init__(
         self,
         dataset_name: str,
@@ -158,10 +157,6 @@ class Feature:
             # Preserve the original candidate values, even if they are None
             candidate.features = features
 
-    def get_db(self) -> Database:
-        client = MongoConnectionManager.get_client(self._mongo_uri)
-        return client[self._db_name]
-
     def compute_global_type_frequencies(
         self,
         docs_to_process: Optional[float] = None,
@@ -189,6 +184,7 @@ class Feature:
             "dataset_name": self.dataset_name,
             "table_name": self.table_name,
             "status": "DONE",
+            "rank_status": "DONE",
             "candidates": {"$exists": True},
         }
         projection = {"candidates": 1}
@@ -228,8 +224,7 @@ class Feature:
             doc_count += 1
             candidates_by_column: Dict[Any, List[Dict[str, Any]]] = doc["candidates"]
 
-            for col_index, candidates in candidates_by_column.items():
-                candidates = sorted(candidates, key=lambda x: x.get("score", 0.0), reverse=True)
+            for col_idx, candidates in candidates_by_column.items():
                 top_candidates = candidates[: self.top_n_for_type_freq]
                 row_qids = set()
 
@@ -240,13 +235,13 @@ class Feature:
                             row_qids.add(qid)
 
                 for qid in row_qids:
-                    type_freq_by_column[col_index][qid] += 1
+                    type_freq_by_column[col_idx][qid] += 1
 
-                rows_count_by_column[col_index] += 1
+                rows_count_by_column[col_idx] += 1
 
         # Normalize frequencies
-        for col_index, freq_counter in type_freq_by_column.items():
-            row_count: int = rows_count_by_column[col_index]
+        for col_idx, freq_counter in type_freq_by_column.items():
+            row_count: int = rows_count_by_column[col_idx]
             if row_count == 0:
                 continue
             # Convert each type's raw count to a ratio in [0..1]
@@ -332,10 +327,10 @@ class Feature:
 
                         # Record predicates connecting subject to object
                         for predicate in subj_objects.get(obj_id, []):
-                            subj_candidate.matches[str(obj_col)].append(
+                            subj_candidate.matches[obj_col].append(
                                 {"p": predicate, "o": obj_id, "s": p_subj_ne}
                             )
-                            subj_candidate.predicates[str(obj_col)][predicate] = p_subj_ne
+                            subj_candidate.predicates[obj_col][predicate] = p_subj_ne
 
                     # Normalize and update subject's feature
                     if obj_score_max > 0:
@@ -417,11 +412,11 @@ class Feature:
 
                 # Process each literal column
                 for lit_col, lit_type in lit_columns.items():
-                    lit_col_int = int(lit_col)
-                    if lit_col_int >= len(row):
+                    normalized_lit_col = ColumnHelper.normalize(lit_col)
+                    if not ColumnHelper.is_valid_index(normalized_lit_col, len(row)):
                         continue
 
-                    lit_value = row[lit_col_int]
+                    lit_value = row[ColumnHelper.to_int(normalized_lit_col)]
                     if not lit_value or pd.isna(lit_value):
                         continue
 
@@ -477,7 +472,7 @@ class Feature:
 
                             if p_subj_lit > 0:
                                 # Record match
-                                subj_candidate.matches[lit_col].append(
+                                subj_candidate.matches[normalized_lit_col].append(
                                     {"p": predicate, "o": kg_value, "s": p_subj_lit}
                                 )
 
@@ -485,10 +480,11 @@ class Feature:
                                 max_score = max(max_score, p_subj_lit)
 
                                 # Update predicates
-                                if predicate not in subj_candidate.predicates[lit_col]:
-                                    subj_candidate.predicates[lit_col][predicate] = 0
-                                subj_candidate.predicates[lit_col][predicate] = max(
-                                    subj_candidate.predicates[lit_col][predicate], p_subj_lit
+                                if predicate not in subj_candidate.predicates[normalized_lit_col]:
+                                    subj_candidate.predicates[normalized_lit_col][predicate] = 0
+                                subj_candidate.predicates[normalized_lit_col][predicate] = max(
+                                    subj_candidate.predicates[normalized_lit_col][predicate],
+                                    p_subj_lit,
                                 )
 
                     # Normalize and update feature

@@ -51,7 +51,7 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["alligator*"]
+include = ["alligator*", "eval"]
 
 [tool.ruff]
 line-length = 99

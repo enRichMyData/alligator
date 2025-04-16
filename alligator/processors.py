@@ -268,3 +268,6 @@ class RowBatchProcessor(DatabaseAccessMixin):
             self.feature.compute_entity_literal_relationships(
                 candidates_by_col, row_data.lit_columns, row_data.row, literals_data
             )
+            
+        # Now that predicates have been populated, compute CPA features
+        self.feature.compute_cpa_features(candidates_by_col)

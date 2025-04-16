@@ -8,14 +8,15 @@ from pymongo.database import Database
 from pymongo.operations import UpdateOne
 
 from alligator import PROJECT_ROOT
+from alligator.database import DatabaseAccessMixin
 from alligator.feature import DEFAULT_FEATURES
-from alligator.mongo import MongoConnectionManager, MongoWrapper
+from alligator.mongo import MongoWrapper
 
 if TYPE_CHECKING:
     from tensorflow.keras.models import Model
 
 
-class MLWorker:
+class MLWorker(DatabaseAccessMixin):
     def __init__(
         self,
         worker_id: int,
@@ -50,12 +51,8 @@ class MLWorker:
         self.mongo_wrapper: MongoWrapper = MongoWrapper(
             self._mongo_uri,
             self._db_name,
-            error_log_collection_name=self.error_logs_collection,
+            error_log_collection=self.error_logs_collection,
         )
-
-    def get_db(self) -> Database:
-        client = MongoConnectionManager.get_client(self._mongo_uri)
-        return client[self._db_name]
 
     def load_ml_model(self) -> "Model":
         from tensorflow.keras.models import load_model  # Local import as in original code
@@ -118,8 +115,8 @@ class MLWorker:
         for doc in batch_docs:
             row_id = doc["row_id"]
             candidates_by_column: Dict[Any, List[Dict[str, Any]]] = doc["candidates"]
-            for col_index, candidates in candidates_by_column.items():
-                freq_counter: Counter = global_type_counts.get(col_index, Counter())
+            for col_idx, candidates in candidates_by_column.items():
+                freq_counter: Counter = global_type_counts.get(col_idx, Counter())
                 for idx, cand in enumerate(candidates):
                     cand_feats = cand.setdefault("features", {})
                     qids = [t.get("id") for t in cand.get("types", []) if t.get("id")]
@@ -134,12 +131,13 @@ class MLWorker:
                     # Build feature vector for ML model
                     feat_vec = self.extract_features(cand)
                     all_candidates.append(feat_vec)
-                    doc_info.append((doc["_id"], row_id, col_index, idx))
+                    doc_info.append((doc["_id"], row_id, col_idx, idx))
 
         # 3) If no candidates, mark these docs as 'ML_DONE'
         if not all_candidates:
             input_collection.update_many(
-                {"_id": {"$in": [d["_id"] for d in batch_docs]}}, {"$set": {"status": "ML_DONE"}}
+                {"_id": {"$in": [d["_id"] for d in batch_docs]}},
+                {"$set": {f"{self.stage}_status": "ML_DONE"}},
             )
             return len(batch_docs)
 
@@ -150,8 +148,8 @@ class MLWorker:
         # 5) Assign scores and prepare updates
         docs_by_id = {doc["_id"]: doc for doc in batch_docs}
         score_map: Dict[Any, Dict[Any, Dict[int, float]]] = {}
-        for i, (doc_id, row_id, col_index, cand_idx) in enumerate(doc_info):
-            score_map.setdefault(doc_id, {}).setdefault(col_index, {})[cand_idx] = float(
+        for i, (doc_id, row_id, col_idx, cand_idx) in enumerate(doc_info):
+            score_map.setdefault(doc_id, {}).setdefault(col_idx, {})[cand_idx] = float(
                 ml_scores[i]
             )
 

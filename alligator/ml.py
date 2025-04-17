@@ -1,6 +1,6 @@
 import os
 from collections import Counter
-from typing import TYPE_CHECKING, Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List, Tuple
 
 import numpy as np
 from pymongo.collection import Collection
@@ -59,11 +59,18 @@ class MLWorker(DatabaseAccessMixin):
 
         return load_model(self.model_path)
 
-    def run(self, global_type_counts: Dict[Any, Counter] = {}) -> None:
+    def run(self, global_frequencies: Tuple[Dict[Any, Counter], Dict[Any, Counter]] = (None, None)) -> None:
         """Process candidates directly from input_collection"""
         db: Database = self.get_db()
         model: "Model" = self.load_ml_model()
         input_collection: Collection = db[self.input_collection]
+
+        # Unpack type and predicate frequencies
+        type_frequencies, predicate_frequencies = global_frequencies
+        if type_frequencies is None:
+            type_frequencies = {}
+        if predicate_frequencies is None:
+            predicate_frequencies = {}
 
         # Now proceed with processing documents in batches
         total_docs = self.mongo_wrapper.count_documents(input_collection, self._get_query())
@@ -75,8 +82,8 @@ class MLWorker(DatabaseAccessMixin):
                 f"{processed_count}/{total_docs} documents"
             )
 
-            # Process a batch using the pre-computed global type frequencies
-            docs_processed = self.apply_ml_ranking(model, global_type_counts)
+            # Process a batch using the pre-computed global frequencies
+            docs_processed = self.apply_ml_ranking(model, type_frequencies, predicate_frequencies)
             processed_count += docs_processed
 
             # If no documents processed, check if there are any left
@@ -89,8 +96,13 @@ class MLWorker(DatabaseAccessMixin):
             f"ML ranking for stage {self.stage} complete: {processed_count}/{total_docs} documents"
         )
 
-    def apply_ml_ranking(self, model: "Model", global_type_counts: Dict[Any, Counter] = {}) -> int:
-        """Apply ML ranking using pre-computed global type frequencies"""
+    def apply_ml_ranking(
+        self, 
+        model: "Model", 
+        type_frequencies: Dict[Any, Counter] = {}, 
+        predicate_frequencies: Dict[Any, Counter] = {}
+    ) -> int:
+        """Apply ML ranking using pre-computed global type and predicate frequencies"""
         db: Database = self.get_db()
         input_collection: Collection = db[self.input_collection]
 
@@ -109,23 +121,44 @@ class MLWorker(DatabaseAccessMixin):
         if not batch_docs:
             return 0
 
-        # 2) Assign global type frequencies to each candidate, extract features, etc.
+        # 2) Assign global frequencies to each candidate, extract features, etc.
         all_candidates = []
         doc_info = []
         for doc in batch_docs:
             row_id = doc["row_id"]
             candidates_by_column: Dict[Any, List[Dict[str, Any]]] = doc["candidates"]
             for col_idx, candidates in candidates_by_column.items():
-                freq_counter: Counter = global_type_counts.get(col_idx, Counter())
+                # Get frequencies for this column
+                cta_counter = type_frequencies.get(col_idx, Counter())
+                cpa_counter = predicate_frequencies.get(col_idx, Counter())
+                
                 for idx, cand in enumerate(candidates):
                     cand_feats = cand.setdefault("features", {})
+                    
+                    # Process CTA (type frequencies)
                     qids = [t.get("id") for t in cand.get("types", []) if t.get("id")]
-                    freq_list = sorted([freq_counter.get(qid, 0.0) for qid in qids], reverse=True)
+                    type_freq_list = sorted([cta_counter.get(qid, 0.0) for qid in qids], reverse=True)
 
                     # Assign typeFreq1..typeFreq5
                     for i in range(1, 6):
                         cand_feats[f"cta_t{i}"] = (
-                            freq_list[i - 1] if (i - 1) < len(freq_list) else 0.0
+                            type_freq_list[i - 1] if (i - 1) < len(type_freq_list) else 0.0
+                        )
+                    
+                    # Process CPA (predicate frequencies)
+                    pred_scores = {}
+                    for rel_col, predicates in cand.get("predicates", {}).items():
+                        for pred_id, pred_value in predicates.items():
+                            pred_freq = cpa_counter.get(pred_id, 0.0)
+                            pred_scores[pred_id] = pred_freq * pred_value
+                    
+                    # Sort and take top 5
+                    pred_freq_list = sorted(pred_scores.values(), reverse=True)
+                    
+                    # Assign predFreq1..predFreq5
+                    for i in range(1, 6):
+                        cand_feats[f"cpa_t{i}"] = (
+                            pred_freq_list[i - 1] if (i - 1) < len(pred_freq_list) else 0.0
                         )
 
                     # Build feature vector for ML model

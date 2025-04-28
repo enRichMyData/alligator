@@ -3,10 +3,9 @@ import multiprocessing as mp
 import os
 import time
 import uuid
-from collections import Counter
 from functools import partial
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 import pandas as pd
 from column_classifier import ColumnClassifier
@@ -54,7 +53,7 @@ class Alligator(DatabaseAccessMixin):
         reranker_model_path: Optional[str] = None,
         ml_worker_batch_size: int = 1024,
         num_ml_workers: int = 2,
-        top_n_for_type_freq: int = 3,
+        top_n_cta_cpa_freq: int = 3,
         doc_percentage_type_features: float = 1.0,
         save_output: bool = True,
         save_output_to_csv: bool = True,
@@ -104,7 +103,7 @@ class Alligator(DatabaseAccessMixin):
         )
         self.ml_worker_batch_size = ml_worker_batch_size
         self.num_ml_workers = num_ml_workers
-        self.top_n_for_type_freq = top_n_for_type_freq
+        self.top_n_cta_cpa_freq = top_n_cta_cpa_freq
         self.doc_percentage_type_features = doc_percentage_type_features
         if not (0 < self.doc_percentage_type_features <= 1):
             raise ValueError("doc_percentage_type_features must be between 0 and 1 (exclusive).")
@@ -123,7 +122,7 @@ class Alligator(DatabaseAccessMixin):
         self.feature = Feature(
             dataset_name,
             table_name,
-            top_n_for_type_freq=top_n_for_type_freq,
+            top_n_cta_cpa_freq=top_n_cta_cpa_freq,
             features=selected_features,
             db_name=self._DB_NAME,
             mongo_uri=self._mongo_uri,
@@ -502,7 +501,7 @@ class Alligator(DatabaseAccessMixin):
             model_path=self.ranker_model_path if stage == "rank" else self.reranker_model_path,
             batch_size=self.ml_worker_batch_size,
             max_candidates_in_result=self.max_candidates_in_result if stage == "rerank" else -1,
-            top_n_for_type_freq=self.top_n_for_type_freq,
+            top_n_cta_cpa_freq=self.top_n_cta_cpa_freq,
             features=self.feature.selected_features,
             mongo_uri=self._mongo_uri,
             db_name=self._DB_NAME,
@@ -543,8 +542,9 @@ class Alligator(DatabaseAccessMixin):
         tasks = [self.worker_async(rank) for rank in range(self.num_workers)]
         await asyncio.gather(*tasks)
 
-        # First ML ranking stage (no global frequencies needed)
-        with mp.Pool(processes=self.num_ml_workers) as pool:
+        pool = mp.Pool(processes=self.num_workers)
+        try:
+            # First ML ranking stage (no global frequencies needed)
             pool.map(
                 partial(
                     self.ml_worker,
@@ -554,13 +554,12 @@ class Alligator(DatabaseAccessMixin):
                 range(self.num_ml_workers),
             )
 
-        # Compute both type and predicate frequencies
-        type_frequencies, predicate_frequencies = self.feature.compute_global_frequencies(
-            docs_to_process=self.doc_percentage_type_features, random_sample=False
-        )
-        
-        # Second ML ranking stage with global frequencies
-        with mp.Pool(processes=self.num_ml_workers) as pool:
+            # Compute both type and predicate frequencies
+            type_frequencies, predicate_frequencies = self.feature.compute_global_frequencies(
+                docs_to_process=self.doc_percentage_type_features, random_sample=False
+            )
+
+            # Second ML ranking stage with global frequencies
             pool.map(
                 partial(
                     self.ml_worker,
@@ -569,6 +568,9 @@ class Alligator(DatabaseAccessMixin):
                 ),
                 range(self.num_ml_workers),
             )
+        finally:
+            pool.close()
+            pool.join()
 
         print("All tasks have been processed.")
         if self._save_output:

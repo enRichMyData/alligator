@@ -59,7 +59,9 @@ class MLWorker(DatabaseAccessMixin):
 
         return load_model(self.model_path)
 
-    def run(self, global_frequencies: Tuple[Dict[Any, Counter], Dict[Any, Counter]] = (None, None)) -> None:
+    def run(
+        self, global_frequencies: Tuple[Dict[Any, Counter], Dict[Any, Counter]] = (None, None)
+    ) -> None:
         """Process candidates directly from input_collection"""
         db: Database = self.get_db()
         model: "Model" = self.load_ml_model()
@@ -97,10 +99,10 @@ class MLWorker(DatabaseAccessMixin):
         )
 
     def apply_ml_ranking(
-        self, 
-        model: "Model", 
-        type_frequencies: Dict[Any, Counter] = {}, 
-        predicate_frequencies: Dict[Any, Counter] = {}
+        self,
+        model: "Model",
+        type_frequencies: Dict[Any, Counter] = {},
+        predicate_frequencies: Dict[Any, Counter] = {},
     ) -> int:
         """Apply ML ranking using pre-computed global type and predicate frequencies"""
         db: Database = self.get_db()
@@ -131,30 +133,34 @@ class MLWorker(DatabaseAccessMixin):
                 # Get frequencies for this column
                 cta_counter = type_frequencies.get(col_idx, Counter())
                 cpa_counter = predicate_frequencies.get(col_idx, Counter())
-                
+
                 for idx, cand in enumerate(candidates):
                     cand_feats = cand.setdefault("features", {})
-                    
+
                     # Process CTA (type frequencies)
-                    qids = [t.get("id") for t in cand.get("types", []) if t.get("id")]
-                    type_freq_list = sorted([cta_counter.get(qid, 0.0) for qid in qids], reverse=True)
+                    types_qids = [t.get("id") for t in cand.get("types", []) if t.get("id")]
+                    type_freq_list = sorted(
+                        [cta_counter.get(qid, 0.0) for qid in types_qids], reverse=True
+                    )
 
                     # Assign typeFreq1..typeFreq5
                     for i in range(1, 6):
                         cand_feats[f"cta_t{i}"] = (
                             type_freq_list[i - 1] if (i - 1) < len(type_freq_list) else 0.0
                         )
-                    
+
                     # Process CPA (predicate frequencies)
                     pred_scores = {}
                     for rel_col, predicates in cand.get("predicates", {}).items():
                         for pred_id, pred_value in predicates.items():
                             pred_freq = cpa_counter.get(pred_id, 0.0)
-                            pred_scores[pred_id] = pred_freq * pred_value
-                    
+                            pred_scores[pred_id] = max(
+                                pred_scores.get(pred_id, 0), pred_freq * pred_value
+                            )
+
                     # Sort and take top 5
                     pred_freq_list = sorted(pred_scores.values(), reverse=True)
-                    
+
                     # Assign predFreq1..predFreq5
                     for i in range(1, 6):
                         cand_feats[f"cpa_t{i}"] = (
@@ -166,17 +172,17 @@ class MLWorker(DatabaseAccessMixin):
                     all_candidates.append(feat_vec)
                     doc_info.append((doc["_id"], row_id, col_idx, idx))
 
-        # 3) If no candidates, mark these docs as 'ML_DONE'
+        # 3) If no candidates, mark these docs as 'DONE'
         if not all_candidates:
             input_collection.update_many(
                 {"_id": {"$in": [d["_id"] for d in batch_docs]}},
-                {"$set": {f"{self.stage}_status": "ML_DONE"}},
+                {"$set": {f"{self.stage}_status": "DONE"}},
             )
             return len(batch_docs)
 
         # 4) ML predictions
-        features_array = np.array(all_candidates)
-        ml_scores = model.predict(features_array, batch_size=128)[:, 1]
+        features_array = np.array(all_candidates).astype(np.float32)
+        ml_scores = model.predict(features_array, batch_size=256)[:, 1]
 
         # 5) Assign scores and prepare updates
         docs_by_id = {doc["_id"]: doc for doc in batch_docs}
@@ -227,6 +233,7 @@ class MLWorker(DatabaseAccessMixin):
         if self.stage == "rank":
             query["rank_status"] = "TODO"
         else:
+            query["rank_status"] = "DONE"
             query["rerank_status"] = "TODO"
         return query
 

@@ -1,9 +1,8 @@
-from collections import Counter, defaultdict
-from typing import Any, Dict, List, Optional, Set, Union, Tuple
 import random
+from collections import Counter, defaultdict
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import pandas as pd
-from pymongo.collection import Collection
 
 from alligator.database import DatabaseAccessMixin
 from alligator.typing import Candidate, LiteralsData, ObjectsData
@@ -47,13 +46,13 @@ class Feature(DatabaseAccessMixin):
         self,
         dataset_name: str,
         table_name: str,
-        top_n_for_type_freq: int = 5,
+        top_n_cta_cpa_freq: int = 5,
         features: Optional[List[str]] = None,
         **kwargs,
     ):
         self.dataset_name = dataset_name
         self.table_name = table_name
-        self.top_n_for_type_freq = top_n_for_type_freq
+        self.top_n_cta_cpa_freq = top_n_cta_cpa_freq
         self.selected_features = features or DEFAULT_FEATURES
         self._db_name = kwargs.pop("db_name", "alligator_db")
         self._mongo_uri = kwargs.pop("mongo_uri", "mongodb://gator-mongodb:27017/")
@@ -177,39 +176,38 @@ class Feature(DatabaseAccessMixin):
         input_collection = db[self.input_collection]
 
         # Get the count of documents
-        total_docs = input_collection.count_documents({
-            "dataset_name": self.dataset_name,
-            "table_name": self.table_name,
-            "status": "DONE",  # Only consider processed documents
-        })
+        total_docs = input_collection.count_documents(
+            {
+                "dataset_name": self.dataset_name,
+                "table_name": self.table_name,
+                "status": "DONE",  # Only consider processed documents
+            }
+        )
 
         # Calculate how many documents to process
-        docs_to_get = int(total_docs * docs_to_process)
-        if docs_to_get == 0 and total_docs > 0:
-            docs_to_get = 1
+        docs_to_get = max(1, int(total_docs * docs_to_process))
 
         # Build the query
         query = {
             "dataset_name": self.dataset_name,
             "table_name": self.table_name,
             "status": "DONE",
+            "rank_status": "DONE",
         }
 
         # Fetch documents
         cursor = input_collection.find(
-            query,
-            projection={"candidates": 1, "classified_columns.NE": 1}
+            query, projection={"candidates": 1, "classified_columns.NE": 1}
         )
 
         # Initialize document counter
         n_docs = 0
-        
+
         # Sample if needed
         if random_sample and docs_to_process < 1.0:
             docs = list(cursor)
             random.shuffle(docs)
             docs = docs[:docs_to_get]
-            n_docs = len(docs)  # Set counter for random sample case
         else:
             docs = cursor.limit(docs_to_get)
 
@@ -219,10 +217,8 @@ class Feature(DatabaseAccessMixin):
 
         # Process each document
         for doc in docs:
-            # Increment document counter if not using random sample
-            if not (random_sample and docs_to_process < 1.0):
-                n_docs += 1
-                
+            n_docs += 1
+
             ne_cols = doc.get("classified_columns", {}).get("NE", {})
             candidates_by_column = doc.get("candidates", {})
 
@@ -239,7 +235,7 @@ class Feature(DatabaseAccessMixin):
                 seen_predicates = set()
 
                 # Consider top 3 candidates (as in FeaturesExtractionRevision)
-                for candidate in candidates[:3]:
+                for candidate in candidates[: self.top_n_cta_cpa_freq]:
                     # Process types (CTA)
                     for type_obj in candidate.get("types", []):
                         type_id = type_obj.get("id")
@@ -260,11 +256,15 @@ class Feature(DatabaseAccessMixin):
         if n_docs > 0:
             for col_idx in type_frequencies:
                 for type_id in type_frequencies[col_idx]:
-                    type_frequencies[col_idx][type_id] = round(type_frequencies[col_idx][type_id] / n_docs, 3)
+                    type_frequencies[col_idx][type_id] = (
+                        type_frequencies[col_idx][type_id] / n_docs
+                    )
 
             for col_idx in predicate_frequencies:
                 for pred_id in predicate_frequencies[col_idx]:
-                    predicate_frequencies[col_idx][pred_id] = round(predicate_frequencies[col_idx][pred_id] / n_docs, 3)
+                    predicate_frequencies[col_idx][pred_id] = (
+                        predicate_frequencies[col_idx][pred_id] / n_docs
+                    )
 
         return type_frequencies, predicate_frequencies
 

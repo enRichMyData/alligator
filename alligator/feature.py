@@ -10,7 +10,7 @@ from alligator.utils import ColumnHelper, ngrams, tokenize_text
 
 DEFAULT_FEATURES = [
     "ambiguity_mention",
-    "ncorrects_tokens",
+    "corrects_tokens",
     "ntoken_mention",
     "ntoken_entity",
     "length_mention",
@@ -80,7 +80,7 @@ class Feature(DatabaseAccessMixin):
         return intersection / union if union > 0 else 0.0
 
     def process_candidates(
-        self, candidates: List[Candidate], entity_name: Optional[str], row_tokens: Set[str]
+        self, candidates: List[Candidate], entity_name: Optional[str], row: Optional[str]
     ) -> None:
         """
         Process candidate records to calculate a set of features for each candidate.
@@ -103,11 +103,9 @@ class Feature(DatabaseAccessMixin):
             descNgram: float = 0.0
             if safe_candidate_description:
                 desc = self.calculate_token_overlap(
-                    row_tokens, tokenize_text(safe_candidate_description)
+                    tokenize_text(row), tokenize_text(safe_candidate_description)
                 )
-                descNgram = self.calculate_ngram_similarity(
-                    safe_entity_name, safe_candidate_description
-                )
+                descNgram = self.calculate_ngram_similarity(row, safe_candidate_description)
 
             # Initialize all default features with default values
             candidate_features: Dict[str, Any] = candidate.features
@@ -117,7 +115,7 @@ class Feature(DatabaseAccessMixin):
             features.update(
                 {
                     "ambiguity_mention": candidate_features.get("ambiguity_mention", 0.0),
-                    "ncorrects_tokens": candidate_features.get("ncorrects_tokens", 0.0),
+                    "corrects_tokens": candidate_features.get("corrects_tokens", 0.0),
                     "ntoken_mention": candidate_features.get(
                         "ntoken_mention", len(safe_entity_name.split())
                     ),

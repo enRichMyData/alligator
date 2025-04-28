@@ -11,7 +11,7 @@ from alligator.feature import Feature
 from alligator.fetchers import CandidateFetcher, LiteralFetcher, ObjectFetcher
 from alligator.mongo import MongoWrapper
 from alligator.typing import Candidate, Entity, RowData
-from alligator.utils import ColumnHelper, tokenize_text
+from alligator.utils import ColumnHelper
 
 
 class RowBatchProcessor(DatabaseAccessMixin):
@@ -187,6 +187,7 @@ class RowBatchProcessor(DatabaseAccessMixin):
         for row_data in row_data_list:
             entity_ids = set()
             candidates_by_col = {}
+            row_value = " ".join(str(v) for v in row_data.row).lower()
             for col_idx, ner_type in row_data.ne_columns.items():
                 normalized_col = ColumnHelper.normalize(col_idx)
                 if not ColumnHelper.is_valid_index(normalized_col, len(row_data.row)):
@@ -205,7 +206,7 @@ class RowBatchProcessor(DatabaseAccessMixin):
                             entity_ids.add(cand.id)
 
                 # Process each entity in the row
-                self._compute_features(entity_value, mention_candidates)
+                self._compute_features(entity_value, row_value, mention_candidates)
 
             # Enhance with additional features if possible
             if self.object_fetcher and self.literal_fetcher:
@@ -237,12 +238,11 @@ class RowBatchProcessor(DatabaseAccessMixin):
                 chunk = bulk_updates[i : i + chunk_size]
                 db[self.input_collection].bulk_write(chunk, ordered=False)
 
-    def _compute_features(self, entity_value: str, candidates: List[Candidate]):
+    def _compute_features(self, entity_value: str, row_value: str, candidates: List[Candidate]):
         """Process entities by computing features. Feature computation
         is done in-place over the candidates."""
 
-        row_tokens = set(tokenize_text(entity_value))
-        self.feature.process_candidates(candidates, entity_value, row_tokens)
+        self.feature.process_candidates(candidates, entity_value, row_value)
 
     async def _enhance_with_lamapi_features(
         self,

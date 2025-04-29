@@ -6,7 +6,7 @@ import pandas as pd
 
 from alligator.database import DatabaseAccessMixin
 from alligator.typing import Candidate, LiteralsData, ObjectsData
-from alligator.utils import ColumnHelper, ngrams, tokenize_text
+from alligator.utils import ColumnHelper, get_ngrams, ngrams, parse_date, perc_diff, tokenize_text
 
 DEFAULT_FEATURES = [
     "ambiguity_mention",
@@ -46,7 +46,7 @@ class Feature(DatabaseAccessMixin):
         self,
         dataset_name: str,
         table_name: str,
-        top_n_cta_cpa_freq: int = 5,
+        top_n_cta_cpa_freq: int = 3,
         features: Optional[List[str]] = None,
         **kwargs,
     ):
@@ -399,27 +399,26 @@ class Feature(DatabaseAccessMixin):
                 lit_values = []
                 for datatype in subj_literals:
                     for predicate in subj_literals[datatype]:
-                        lit_values.extend(
-                            str(val).lower() for val in subj_literals[datatype][predicate]
-                        )
+                        for value in subj_literals[datatype][predicate]:
+                            if value.startswith("+") and value[1:].isdigit():
+                                value = value[1:]
+                            lit_values.append(str(value).lower())
 
                 lit_string = " ".join(lit_values)
 
                 # Calculate token-based similarity
+                # lit_tokens = set(tokenize_text(lit_string))
+                # row_all_tokens = set(tokenize_text(row_text_all))
+                # row_lit_tokens = set(tokenize_text(row_text_lit))
+                lit_tokens = set(lit_string.split())
+                row_all_tokens = set(row_text_all.split())
+                row_lit_tokens = set(row_text_lit.split())
 
-                lit_tokens = set(tokenize_text(lit_string))
-                row_all_tokens = set(tokenize_text(row_text_all))
-                row_lit_tokens = set(tokenize_text(row_text_lit))
-
-                p_subj_lit_all_datatype = (
-                    len(lit_tokens & row_lit_tokens) / len(lit_tokens | row_lit_tokens)
-                    if lit_tokens and row_lit_tokens
-                    else 0
+                p_subj_lit_all_datatype = len(lit_tokens & row_lit_tokens) / max(
+                    1, len(lit_tokens), len(row_lit_tokens)
                 )
-                p_subj_lit_row = (
-                    len(lit_tokens & row_all_tokens) / len(lit_tokens | row_all_tokens)
-                    if lit_tokens and row_all_tokens
-                    else 0
+                p_subj_lit_row = len(lit_tokens & row_all_tokens) / max(
+                    1, len(lit_tokens), len(row_all_tokens)
                 )
 
                 subj_candidate.features["p_subj_lit_all_datatype"] = p_subj_lit_all_datatype
@@ -436,12 +435,7 @@ class Feature(DatabaseAccessMixin):
                         continue
 
                     lit_value = str(lit_value).lower()
-                    lit_datatype = lit_type.upper()  # Normalize datatype
-
-                    # Find matching datatype in literals
-                    normalized_datatype = lit_datatype.lower()
-                    if normalized_datatype not in subj_literals:
-                        continue
+                    normalized_datatype = lit_type.upper()
 
                     # Calculate maximum similarity for this literal column
                     max_score = 0.0
@@ -451,39 +445,31 @@ class Feature(DatabaseAccessMixin):
 
                             # Calculate similarity based on datatype
                             p_subj_lit = 0.0
-                            if lit_datatype == "NUMBER":
+                            if lit_type == "NUMBER":
                                 # Simple numeric similarity (could be improved)
                                 try:
                                     num1 = float(lit_value)
                                     num2 = float(kg_value)
-                                    if num1 == num2:
-                                        p_subj_lit = 1.0
-                                    else:
-                                        max_val = max(abs(num1), abs(num2))
-                                        diff = abs(num1 - num2)
-                                        if max_val > 0:
-                                            p_subj_lit = max(0, 1 - (diff / max_val))
+                                    p_subj_lit = perc_diff(num1, num2)
                                 except (ValueError, TypeError):
                                     pass
-                            elif lit_datatype == "DATETIME":
-                                # Simple string comparison for dates (could be improved)
-                                if lit_value == kg_value:
-                                    p_subj_lit = 1.0
-                                else:
-                                    # Simple substring match
+                            elif normalized_datatype == "DATETIME":
+                                try:
+                                    date_parsed1 = parse_date(lit_value)
+                                    date_parsed2 = parse_date(kg_value)
                                     p_subj_lit = (
-                                        0.5
-                                        if (lit_value in kg_value or kg_value in lit_value)
-                                        else 0
-                                    )
+                                        perc_diff(date_parsed1.year, date_parsed2.year)
+                                        + perc_diff(date_parsed1.month, date_parsed2.month)
+                                        + perc_diff(date_parsed1.day, date_parsed2.day)
+                                    ) / 3
+                                except Exception:
+                                    p_subj_lit = 0
                             else:  # STRING
-                                # Use token-based similarity
-                                lit_tokens = set(tokenize_text(lit_value))
-                                kg_tokens = set(tokenize_text(kg_value))
-                                if lit_tokens and kg_tokens:
-                                    p_subj_lit = len(lit_tokens & kg_tokens) / len(
-                                        lit_tokens | kg_tokens
-                                    )
+                                val1_ngrams = get_ngrams(lit_value)
+                                val2_ngrams = get_ngrams(kg_value)
+                                p_subj_lit = len(val1_ngrams.intersection(val2_ngrams)) / max(
+                                    len(val1_ngrams), len(val2_ngrams), 1
+                                )
 
                             if p_subj_lit > 0:
                                 # Record match

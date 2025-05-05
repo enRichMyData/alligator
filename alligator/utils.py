@@ -2,6 +2,7 @@ import re
 from functools import lru_cache
 from typing import List, Set
 
+import nltk
 from dateutil.parser import parse
 from nltk.tokenize import word_tokenize
 
@@ -44,15 +45,13 @@ def tokenize_text(text: str) -> Set[str]:
 
 
 def clean_str(value):
-    original_value = str(value)
+    original_value = str(value).lower()
+    value = original_value
 
-    # Remove content within brackets (including the brackets themselves)
-    value = re.sub(r"\[.*?\]", "", original_value)
+    # Remove purely numerical content within brackets
+    value = re.sub(r"\[\d+\w*\]", "", value)
 
-    # Remove content within parentheses (including the parentheses themselves)
-    value = re.sub(r"\(.*?\)", "", value)
-
-    # Replace specific unwanted characters with space
+    # Remove specific unwanted characters
     stop_characters = ["_"]
     for char in stop_characters:
         value = value.replace(char, " ")
@@ -61,9 +60,8 @@ def clean_str(value):
     value = " ".join(value.split())
 
     # Return the original string if the cleaned result is empty
-    if not value.strip():
+    if not value:
         return original_value
-
     return value
 
 
@@ -123,3 +121,57 @@ def get_ngrams(text, n=3):
         for ngram in temp:
             ngrams.add(ngram)
     return set(ngrams)
+
+
+def compute_similarity_between_string(str1: str, str2: str, ngram: int | None = None) -> float:
+    ngrams_str1 = get_ngrams(str1, ngram)
+    ngrams_str2 = get_ngrams(str2, ngram)
+    score = len(ngrams_str1.intersection(ngrams_str2)) / max(len(ngrams_str1), len(ngrams_str2), 1)
+    return score
+
+
+def compute_similarity_between_string_token_based(str1: str, str2: str) -> float:
+    token_set_str1 = set(str1.split(" "))
+    token_set_str2 = set(str2.split(" "))
+    score = len(token_set_str1.intersection(token_set_str2)) / max(
+        len(token_set_str1), len(token_set_str2), 1
+    )
+    return score
+
+
+def edit_distance(s1, s2):
+    """
+    Normalized Levhenstein distance function between two strings
+    """
+    return nltk.edit_distance(s1, s2) / max(len(s1), len(s2), 1)
+
+
+def _my_abs(value1, value2):
+    diff = 1 - (abs(value1 - value2) / max(abs(value1), abs(value2), 1))
+    return diff
+
+
+def compute_similarty_between_numbers(value1: str, value2: str) -> float:
+    try:
+        value1 = float(value1)
+        value2 = float(value2)
+        score = _my_abs(value1, value2)
+    except Exception:
+        score = 0
+
+    return score
+
+
+def compute_similarity_between_dates(date1: str, date2: str) -> float:
+    try:
+        date_parsed1 = parse_date(date1)
+        date_parsed2 = parse_date(date2)
+        score = (
+            _my_abs(date_parsed1.year, date_parsed2.year)
+            + _my_abs(date_parsed1.month, date_parsed2.month)
+            + _my_abs(date_parsed1.day, date_parsed2.day)
+        ) / 3
+    except Exception:
+        score = 0
+
+    return score

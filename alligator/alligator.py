@@ -224,32 +224,42 @@ class Alligator(DatabaseAccessMixin):
             total_rows = len(df)
             is_csv_path = False
         else:
-            sample = pd.read_csv(self.input_csv, nrows=1)
+            sample = pd.read_csv(self.input_csv, nrows=32)
             total_rows = -1
             is_csv_path = True
 
         print(f"Onboarding {total_rows} rows for dataset '{dataset_name}', table '{table_name}'")
 
         # Step 2: Perform column classification
-        if columns_type is None:
-            classifier = ColumnClassifier(model_type="fast")
-            classification_results = classifier.classify_multiple_tables([sample])
-            table_classification = classification_results[0].get("table_1", {})
+        classifier = ColumnClassifier(model_type="fast")
+        classification_results = classifier.classify_multiple_tables([sample])
+        table_classification = classification_results[0].get("table_1", {})
 
-            ne_cols, lit_cols, ignored_cols = {}, {}, []
-            NE_classifications = {"PERSON", "OTHER", "ORGANIZATION", "LOCATION"}
+        ne_cols, lit_cols, ignored_cols = {}, {}, []
+        ne_types = {"PERSON", "OTHER", "ORGANIZATION", "LOCATION"}
+        lit_types = {"NUMBER", "DATE", "STRING"}
 
-            for idx, col in enumerate(sample.columns):
-                col_result = table_classification.get(col, {})
-                classification = col_result.get("classification", "UNKNOWN")
-                if classification in NE_classifications:
-                    ne_cols[str(idx)] = classification
-                else:
-                    lit_cols[str(idx)] = classification
-        else:
-            ne_cols = columns_type.get("NE", {})
-            lit_cols = columns_type.get("LIT", {})
-            ignored_cols = columns_type.get("IGNORED", [])
+        classified_columns = {}
+        for idx, col in enumerate(sample.columns):
+            col_result = table_classification.get(col, {})
+            classification = col_result.get("classification", "UNKNOWN")
+            if classification in ne_types:
+                ne_cols[str(idx)] = classification
+            elif classification in lit_types:
+                if classification == "DATE":
+                    classification = "DATETIME"
+                lit_cols[str(idx)] = classification
+            classified_columns[str(idx)] = classification
+
+        if columns_type is not None:
+            ne_cols = columns_type.get("NE", ne_cols)
+            for col in ne_cols:
+                ne_cols[col] = classified_columns.get(col, "UNKNOWN")
+            lit_cols = columns_type.get("LIT", lit_cols)
+            for col in lit_cols:
+                if not lit_cols[col]:
+                    lit_cols[col] = classified_columns.get(col, "UNKNOWN")
+            ignored_cols = columns_type.get("IGNORED", ignored_cols)
 
         all_recognized_cols = set(ne_cols.keys()) | set(lit_cols.keys())
         all_cols = set([str(i) for i in range(len(sample.columns))])
@@ -257,6 +267,7 @@ class Alligator(DatabaseAccessMixin):
             ignored_cols.extend(list(all_cols - all_recognized_cols))
         ignored_cols = list(set(ignored_cols))
         context_cols = list(set([str(i) for i in range(len(sample.columns))]) - set(ignored_cols))
+        context_cols = sorted(context_cols, key=lambda x: int(x))
 
         # Step 3: Define a chunk generator function
         def get_chunks():

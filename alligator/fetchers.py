@@ -45,7 +45,7 @@ class CandidateFetcher(DatabaseAccessMixin):
         token: str,
         num_candidates: int,
         feature: Feature,
-        use_cache: bool = False,
+        use_cache: bool = True,
         **kwargs,
     ):
         self.endpoint = endpoint

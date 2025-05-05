@@ -1,12 +1,19 @@
 import random
 from collections import Counter, defaultdict
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
 from alligator.database import DatabaseAccessMixin
 from alligator.typing import Candidate, LiteralsData, ObjectsData
-from alligator.utils import ColumnHelper, get_ngrams, ngrams, parse_date, perc_diff, tokenize_text
+from alligator.utils import (
+    ColumnHelper,
+    clean_str,
+    compute_similarity_between_dates,
+    compute_similarity_between_string,
+    compute_similarity_between_string_token_based,
+    compute_similarty_between_numbers,
+)
 
 DEFAULT_FEATURES = [
     "ambiguity_mention",
@@ -68,18 +75,6 @@ class Feature(DatabaseAccessMixin):
         }
         return mapping.get(kind, 1)
 
-    def calculate_token_overlap(self, tokens_a: Set[str], tokens_b: Set[str]) -> float:
-        intersection: Set[str] = tokens_a & tokens_b
-        union: Set[str] = tokens_a | tokens_b
-        return len(intersection) / len(union) if union else 0.0
-
-    def calculate_ngram_similarity(self, a: str, b: str, n: int = 3) -> float:
-        a_ngrams: List[str] = ngrams(a, n)
-        b_ngrams: List[str] = ngrams(b, n)
-        intersection: int = len(set(a_ngrams) & set(b_ngrams))
-        union: int = len(set(a_ngrams) | set(b_ngrams))
-        return intersection / union if union > 0 else 0.0
-
     def process_candidates(
         self, candidates: List[Candidate], entity_name: Optional[str], row: Optional[str]
     ) -> None:
@@ -88,6 +83,8 @@ class Feature(DatabaseAccessMixin):
         """
         # Use a safe version of entity_name for computations.
         safe_entity_name: str = entity_name if entity_name is not None else ""
+        safe_row = row if row is not None else ""
+        safe_row = clean_str(safe_row)
 
         for candidate in candidates:
             # Retrieve original values, which might be None.
@@ -96,17 +93,21 @@ class Feature(DatabaseAccessMixin):
 
             # Create safe versions for computation.
             safe_candidate_name: str = candidate_name if candidate_name is not None else ""
+            safe_candidate_name = clean_str(safe_candidate_name)
             safe_candidate_description: str = (
                 candidate_description if candidate_description is not None else ""
             )
+            safe_candidate_description = clean_str(safe_candidate_description)
 
             desc: float = 0.0
             descNgram: float = 0.0
             if safe_candidate_description:
-                desc = self.calculate_token_overlap(
-                    tokenize_text(row), tokenize_text(safe_candidate_description)
+                desc = compute_similarity_between_string(
+                    safe_candidate_description, row, ngram=None
                 )
-                descNgram = self.calculate_ngram_similarity(row, safe_candidate_description)
+                descNgram = compute_similarity_between_string(
+                    safe_candidate_description, row, ngram=3
+                )
 
             # Initialize all default features with default values
             candidate_features: Dict[str, Any] = candidate.features
@@ -287,6 +288,7 @@ class Feature(DatabaseAccessMixin):
                     continue
 
                 # Process each subject candidate
+                object_rel_score_buffer = {}
                 for subj_candidate in subj_candidates:
                     subj_id = subj_candidate.id
                     if not subj_id or subj_id not in objects_data:
@@ -306,7 +308,6 @@ class Feature(DatabaseAccessMixin):
 
                     # Calculate maximum object score for this subject
                     obj_score_max = 0
-                    object_rel_score_buffer = {}
 
                     for obj_candidate in obj_candidates:
                         obj_id = obj_candidate.id
@@ -326,7 +327,8 @@ class Feature(DatabaseAccessMixin):
                         obj_score_max = max(obj_score_max, p_subj_ne)
 
                         # Track the best score for each object
-                        object_rel_score_buffer[obj_id] = object_rel_score_buffer.get(obj_id, 0)
+                        if obj_id not in object_rel_score_buffer:
+                            object_rel_score_buffer[obj_id] = 0
 
                         # Calculate reverse score from subject to object
                         subj_string_features = []
@@ -334,11 +336,10 @@ class Feature(DatabaseAccessMixin):
                             if feature_name in subj_candidate.features:
                                 subj_string_features.append(subj_candidate.features[feature_name])
 
-                        if subj_string_features:
-                            score_rel = sum(subj_string_features) / len(subj_string_features)
-                            object_rel_score_buffer[obj_id] = max(
-                                object_rel_score_buffer[obj_id], score_rel
-                            )
+                        score_rel = sum(subj_string_features) / len(subj_string_features)
+                        object_rel_score_buffer[obj_id] = max(
+                            object_rel_score_buffer[obj_id], score_rel
+                        )
 
                         # Record predicates connecting subject to object
                         for predicate in subj_objects.get(obj_id, []):
@@ -348,16 +349,15 @@ class Feature(DatabaseAccessMixin):
                             subj_candidate.predicates[obj_col][predicate] = p_subj_ne
 
                     # Normalize and update subject's feature
-                    if obj_score_max > 0:
-                        subj_candidate.features["p_subj_ne"] += obj_score_max / n_ne_cols
+                    subj_candidate.features["p_subj_ne"] += obj_score_max / n_ne_cols
 
-                    # Update object candidates' features
-                    for obj_candidate in obj_candidates:
-                        obj_id = obj_candidate.id
-                        if obj_id in object_rel_score_buffer:
-                            obj_candidate.features["p_obj_ne"] += (
-                                object_rel_score_buffer[obj_id] / n_ne_cols
-                            )
+                # Update object candidates' features
+                for obj_candidate in obj_candidates:
+                    obj_id = obj_candidate.id
+                    if obj_id in object_rel_score_buffer:
+                        obj_candidate.features["p_obj_ne"] += (
+                            object_rel_score_buffer[obj_id] / n_ne_cols
+                        )
 
     def compute_entity_literal_relationships(
         self,
@@ -378,10 +378,8 @@ class Feature(DatabaseAccessMixin):
             return
 
         # Get row text tokens
-        row_text_all = " ".join(str(v) for v in row if pd.notna(v)).lower()
-        row_text_lit = " ".join(
-            str(row[int(c)]) for c in lit_columns if int(c) < len(row) and pd.notna(row[int(c)])
-        ).lower()
+        row_text_all = clean_str(" ".join(str(v) for v in row))
+        row_text_lit = clean_str(" ".join(str(row[int(c)]) for c in lit_columns))
 
         # Process each subject (NE) candidate
         for subj_col, subj_candidates in all_candidates_by_col.items():
@@ -403,26 +401,14 @@ class Feature(DatabaseAccessMixin):
                             if value.startswith("+") and value[1:].isdigit():
                                 value = value[1:]
                             lit_values.append(str(value).lower())
-
                 lit_string = " ".join(lit_values)
 
-                # Calculate token-based similarity
-                # lit_tokens = set(tokenize_text(lit_string))
-                # row_all_tokens = set(tokenize_text(row_text_all))
-                # row_lit_tokens = set(tokenize_text(row_text_lit))
-                lit_tokens = set(lit_string.split())
-                row_all_tokens = set(row_text_all.split())
-                row_lit_tokens = set(row_text_lit.split())
-
-                p_subj_lit_all_datatype = len(lit_tokens & row_lit_tokens) / max(
-                    1, len(lit_tokens), len(row_lit_tokens)
-                )
-                p_subj_lit_row = len(lit_tokens & row_all_tokens) / max(
-                    1, len(lit_tokens), len(row_all_tokens)
-                )
-
-                subj_candidate.features["p_subj_lit_all_datatype"] = p_subj_lit_all_datatype
-                subj_candidate.features["p_subj_lit_row"] = p_subj_lit_row
+                subj_candidate.features[
+                    "p_subj_lit_all_datatype"
+                ] = compute_similarity_between_string_token_based(lit_string, row_text_lit)
+                subj_candidate.features[
+                    "p_subj_lit_row"
+                ] = compute_similarity_between_string_token_based(lit_string, row_text_all)
 
                 # Process each literal column
                 for lit_col, lit_type in lit_columns.items():
@@ -436,6 +422,8 @@ class Feature(DatabaseAccessMixin):
 
                     lit_value = str(lit_value).lower()
                     normalized_datatype = lit_type.upper()
+                    if normalized_datatype not in subj_literals:
+                        continue
 
                     # Calculate maximum similarity for this literal column
                     max_score = 0.0
@@ -446,38 +434,15 @@ class Feature(DatabaseAccessMixin):
                             # Calculate similarity based on datatype
                             p_subj_lit = 0.0
                             if lit_type == "NUMBER":
-                                # Simple numeric similarity (could be improved)
-                                try:
-                                    num1 = float(lit_value)
-                                    num2 = float(kg_value)
-                                    p_subj_lit = perc_diff(num1, num2)
-                                except (ValueError, TypeError):
-                                    pass
+                                p_subj_lit = compute_similarty_between_numbers(lit_value, kg_value)
                             elif normalized_datatype == "DATETIME":
-                                try:
-                                    date_parsed1 = parse_date(lit_value)
-                                    date_parsed2 = parse_date(kg_value)
-                                    p_subj_lit = (
-                                        perc_diff(date_parsed1.year, date_parsed2.year)
-                                        + perc_diff(date_parsed1.month, date_parsed2.month)
-                                        + perc_diff(date_parsed1.day, date_parsed2.day)
-                                    ) / 3
-                                except Exception:
-                                    p_subj_lit = 0
-                            else:  # STRING
-                                val1_ngrams = get_ngrams(lit_value)
-                                val2_ngrams = get_ngrams(kg_value)
-                                p_subj_lit = len(val1_ngrams.intersection(val2_ngrams)) / max(
-                                    len(val1_ngrams), len(val2_ngrams), 1
-                                )
-
+                                p_subj_lit = compute_similarity_between_dates(lit_value, kg_value)
+                            elif normalized_datatype == "STRING":
+                                p_subj_lit = compute_similarity_between_string(lit_value, kg_value)
                             if p_subj_lit > 0:
-                                # Record match
                                 subj_candidate.matches[normalized_lit_col].append(
                                     {"p": predicate, "o": kg_value, "s": p_subj_lit}
                                 )
-
-                                # Update maximum score
                                 max_score = max(max_score, p_subj_lit)
 
                                 # Update predicates
@@ -489,5 +454,4 @@ class Feature(DatabaseAccessMixin):
                                 )
 
                     # Normalize and update feature
-                    if max_score > 0:
-                        subj_candidate.features["p_subj_lit_datatype"] += max_score / n_lit_cols
+                    subj_candidate.features["p_subj_lit_datatype"] += max_score / n_lit_cols

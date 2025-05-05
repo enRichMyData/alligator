@@ -24,6 +24,9 @@ def main(args: argparse.Namespace):
     for doc in cursor:
         table_name = doc["table_name"]
         row_id = doc["row_id"]
+        if "el_results" not in doc:
+            print(f"Skipping document {doc['_id']} due to missing 'el_results'.")
+            continue
         for col_id in doc["el_results"]:
             winning_entity = doc["el_results"][col_id][0]["id"]
             results.append(

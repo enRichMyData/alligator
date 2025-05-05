@@ -12,6 +12,8 @@ from jsonargparse import ArgumentParser
 
 from alligator import PROJECT_ROOT
 from alligator.alligator import Alligator
+from alligator.database import DatabaseManager
+from alligator.mongo import MongoWrapper
 
 load_dotenv(PROJECT_ROOT)
 
@@ -69,6 +71,29 @@ async def main(args: argparse.Namespace):
         args.gator.dataset_name = args.dataset_name
         args.gator.table_name = tab_id
         args.gator.correct_qids = correct_qids
+
+        # Check if the table has already been processed
+        db = DatabaseManager.get_database(args.gator.mongo_uri, "alligator_db")
+        mongo = MongoWrapper(mongo_uri=args.gator.mongo_uri, db_name="alligator_db")
+        cursor = mongo.find_one_document(
+            collection=db.get_collection("input_data"),
+            query={"dataset_name": args.gator.dataset_name, "table_name": tab_id},
+            projection={"rank_status": 1, "rerank_status": 1},
+        )
+        if cursor is not None:
+            if cursor.get("rank_status") == "DONE" and cursor.get("rerank_status") == "DONE":
+                print(f"Table {tab_id} already processed. Skipping.")
+                continue
+            else:
+                print(f"Table {tab_id} already exists in the database but not fully processed.")
+                mongo.delete_documents(
+                    collection=db.get_collection("input_data"),
+                    query={"dataset_name": args.gator.dataset_name, "table_name": tab_id},
+                )
+                print(f"Deleted incomplete document for table {tab_id}.")
+        else:
+            print(f"Table {tab_id} not found in the database. Proceeding with processing.")
+
         gator = Alligator(**args.gator)
         await gator.run()
         toc = time.perf_counter()

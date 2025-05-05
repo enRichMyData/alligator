@@ -60,7 +60,11 @@ class MLWorker(DatabaseAccessMixin):
         return load_model(self.model_path)
 
     def run(
-        self, global_frequencies: Tuple[Dict[Any, Counter], Dict[Any, Counter]] = (None, None)
+        self,
+        global_frequencies: Tuple[Dict[Any, Counter] | None, Dict[Any, Counter] | None] = (
+            None,
+            None,
+        ),
     ) -> None:
         """Process candidates directly from input_collection"""
         db: Database = self.get_db()

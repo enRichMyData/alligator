@@ -5,7 +5,7 @@ import time
 import uuid
 from functools import partial
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Counter, Dict, List, Optional, Tuple
 
 import pandas as pd
 from column_classifier import ColumnClassifier
@@ -499,7 +499,7 @@ class Alligator(DatabaseAccessMixin):
         self,
         rank: int,
         stage: str = "rank",
-        global_frequencies=(None, None),
+        global_frequencies=Tuple[Dict[str, Counter] | None, Dict[str, Counter] | None],
     ):
         """Unified wrapper function for ML workers"""
         worker = MLWorker(

@@ -1,4 +1,3 @@
-import random
 from collections import Counter, defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -184,7 +183,10 @@ class Feature(DatabaseAccessMixin):
         )
 
         # Calculate how many documents to process
-        docs_to_get = max(1, int(total_docs * docs_to_process))
+        if docs_to_process is None or docs_to_process >= 1.0:
+            docs_to_get = total_docs
+        else:
+            docs_to_get = max(1, int(total_docs * docs_to_process))
 
         # Build the query
         query = {
@@ -193,29 +195,33 @@ class Feature(DatabaseAccessMixin):
             "status": "DONE",
             "rank_status": "DONE",
         }
+        projection = {"candidates": 1, "classified_columns": 1}
 
-        # Fetch documents
-        cursor = input_collection.find(
-            query, projection={"candidates": 1, "classified_columns.NE": 1}
-        )
-
-        # Initialize document counter
-        n_docs = 0
-
-        # Sample if needed
-        if random_sample and docs_to_process < 1.0:
-            docs = list(cursor)
-            random.shuffle(docs)
-            docs = docs[:docs_to_get]
+        total_docs = input_collection.count_documents(query)
+        if random_sample:
+            # Use aggregation pipeline with $sample for random sampling
+            print(
+                f"Computing type-frequency features by randomly sampling {docs_to_get} documents"
+            )
+            pipeline = [
+                {"$match": query},
+                {"$sample": {"size": docs_to_get}},
+                {"$project": projection},
+            ]
+            cursor = input_collection.aggregate(pipeline)
         else:
-            docs = cursor.limit(docs_to_get)
+            # Simple limit if specified
+            print(f"Computing type-frequency features by processing first {docs_to_get} documents")
+            cursor = input_collection.find(query, projection)
+            cursor = cursor.limit(docs_to_get)
 
         # Initialize counters
         type_frequencies = defaultdict(Counter)
         predicate_frequencies = defaultdict(Counter)
 
         # Process each document
-        for doc in docs:
+        n_docs = 0
+        for doc in cursor:
             n_docs += 1
 
             ne_cols = doc.get("classified_columns", {}).get("NE", {})

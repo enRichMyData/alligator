@@ -40,7 +40,7 @@ class Alligator(DatabaseAccessMixin):
         dataset_name: str | None = None,
         table_name: str | None = None,
         columns_type: ColType | None = None,
-        worker_batch_size: int = 128,
+        worker_batch_size: int = 64,
         num_workers: Optional[int] = None,
         max_candidates_in_result: int = 5,
         entity_retrieval_endpoint: Optional[str] = None,
@@ -51,7 +51,7 @@ class Alligator(DatabaseAccessMixin):
         candidate_retrieval_limit: int = 16,
         ranker_model_path: Optional[str] = None,
         reranker_model_path: Optional[str] = None,
-        ml_worker_batch_size: int = 1024,
+        ml_worker_batch_size: int = 256,
         num_ml_workers: int = 2,
         top_n_cta_cpa_freq: int = 3,
         doc_percentage_type_features: float = 1.0,
@@ -192,22 +192,6 @@ class Alligator(DatabaseAccessMixin):
             MongoConnectionManager.close_connection()
         except Exception:
             pass
-
-    def claim_todo_batch(self, input_collection, batch_size=16):
-        docs = []
-        for _ in range(batch_size):
-            doc = input_collection.find_one_and_update(
-                {
-                    "dataset_name": self.dataset_name,
-                    "table_name": self.table_name,
-                    "status": "TODO",
-                },
-                {"$set": {"status": "DOING"}},
-            )
-            if doc is None:
-                break
-            docs.append(doc)
-        return docs
 
     def onboard_data(
         self,
@@ -539,12 +523,50 @@ class Alligator(DatabaseAccessMixin):
     async def worker_async(self, rank: int):
         db = self.get_db()
         input_collection = db[self._INPUT_COLLECTION]
-        while True:
-            todo_docs = self.claim_todo_batch(input_collection, batch_size=self.worker_batch_size)
-            print(f"Worker {rank} processing {len(todo_docs)} tasks...")
-            if not todo_docs:
-                print("No more tasks to process.")
-                break
+
+        # Count total documents to process
+        total_docs = input_collection.count_documents(
+            {
+                "dataset_name": self.dataset_name,
+                "table_name": self.table_name,
+            }
+        )
+
+        docs_per_worker = total_docs // self.num_workers
+        remainder = total_docs % self.num_workers
+
+        # Adjust batch size for this specific worker
+        # Give extra documents to earlier workers if not evenly divisible
+        if rank < remainder:
+            batch_size = docs_per_worker + 1
+            skip = rank * (docs_per_worker + 1)
+        else:
+            batch_size = docs_per_worker
+            skip = (remainder * (docs_per_worker + 1)) + ((rank - remainder) * docs_per_worker)
+        print(f"Worker {rank} started with batch size {batch_size}, skipping {skip}.")
+
+        # Find documents to process for this worker using skip/limit
+        cursor = (
+            input_collection.find(
+                {
+                    "dataset_name": self.dataset_name,
+                    "table_name": self.table_name,
+                }
+            )
+            .skip(skip)
+            .limit(batch_size)
+        )
+
+        todo_docs = []
+        for doc in cursor:
+            input_collection.update_one({"_id": doc["_id"]}, {"$set": {"status": "DOING"}})
+            if len(todo_docs) < self.worker_batch_size:
+                todo_docs.append(doc)
+            else:
+                await self.process_batch(todo_docs)
+                print(f"Worker {rank} processed {len(todo_docs)} documents.")
+                todo_docs = [doc]
+        if todo_docs:
             await self.process_batch(todo_docs)
 
     def worker(self, rank: int):

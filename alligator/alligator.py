@@ -57,7 +57,7 @@ class Alligator(DatabaseAccessMixin):
         doc_percentage_type_features: float = 1.0,
         save_output: bool = True,
         save_output_to_csv: bool = True,
-        correct_qids: Dict[str, str] | None = None,
+        correct_qids: Dict[str, str | List[str]] | None = None,
         **kwargs,
     ) -> None:
         if input_csv is None:
@@ -112,6 +112,11 @@ class Alligator(DatabaseAccessMixin):
         self._save_output = save_output
         self._save_output_to_csv = save_output_to_csv
         self.correct_qids = correct_qids or {}
+        for key, value in self.correct_qids.items():
+            if isinstance(value, str):
+                self.correct_qids[key] = [value]
+            elif not isinstance(value, list):
+                raise ValueError(f"Correct QIDs for {key} must be a string or a list of strings.")
         self._dry_run = kwargs.pop("dry_run", False)
         self.mongo_wrapper = MongoWrapper(
             self._mongo_uri,
@@ -321,6 +326,8 @@ class Alligator(DatabaseAccessMixin):
                     key = f"{row_id}-{col_id}"
                     if key in self.correct_qids:
                         correct_qids[key] = self.correct_qids[key]
+                        if isinstance(correct_qids[key], str):
+                            correct_qids[key] = [correct_qids[key]]
                 document["correct_qids"] = correct_qids
                 documents.append(document)
 

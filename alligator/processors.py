@@ -111,7 +111,7 @@ class RowBatchProcessor(DatabaseAccessMixin):
                     continue
 
                 # Normalize value
-                correct_qid = correct_qids.get(f"{row_index}-{normalized_col}")
+                qids = correct_qids.get(f"{row_index}-{normalized_col}", [])
 
                 # Create entity
                 entity = Entity(
@@ -119,7 +119,7 @@ class RowBatchProcessor(DatabaseAccessMixin):
                     row_index=row_index,
                     col_index=normalized_col,
                     context_text=context_text,
-                    correct_qid=correct_qid,
+                    correct_qids=qids,
                     fuzzy=False,
                 )
                 entities.append(entity)
@@ -134,11 +134,11 @@ class RowBatchProcessor(DatabaseAccessMixin):
         initial_results = await self.candidate_fetcher.fetch_candidates_batch(
             entities=[e.value for e in entities],
             fuzzies=[e.fuzzy for e in entities],
-            qids=[e.correct_qid for e in entities],
+            qids=[e.correct_qids if e.correct_qids is not None else [] for e in entities],
         )
 
         # Find entities needing fuzzy retry
-        retry_entities = []
+        retry_entities: List[Entity] = []
         for entity in entities:
             candidates = initial_results.get(entity.value, [])
             if self.fuzzy_retry and len(candidates) <= 1:
@@ -148,7 +148,7 @@ class RowBatchProcessor(DatabaseAccessMixin):
                     row_index=entity.row_index,
                     col_index=entity.col_index,
                     context_text=entity.context_text,
-                    correct_qid=entity.correct_qid,
+                    correct_qids=entity.correct_qids,
                     fuzzy=True,
                 )
                 retry_entities.append(retry_entity)
@@ -158,7 +158,9 @@ class RowBatchProcessor(DatabaseAccessMixin):
             retry_results = await self.candidate_fetcher.fetch_candidates_batch(
                 entities=[e.value for e in retry_entities],
                 fuzzies=[e.fuzzy for e in retry_entities],
-                qids=[e.correct_qid for e in retry_entities],
+                qids=[
+                    e.correct_qids if e.correct_qids is not None else [] for e in retry_entities
+                ],
             )
 
             # Update with retry results

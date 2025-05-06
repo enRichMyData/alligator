@@ -70,7 +70,7 @@ class CandidateFetcher(DatabaseAccessMixin):
         self,
         entities: List[str],
         fuzzies: List[bool],
-        qids: List[Optional[str]],
+        qids: List[List[str]],
     ) -> Dict[str, List[dict]]:
         """
         Fetch candidates for multiple entities in a batch.
@@ -160,7 +160,7 @@ class CandidateFetcher(DatabaseAccessMixin):
         # If all attempts fail
         return entity_name, []
 
-    async def fetch_candidates_batch_async(self, entities, fuzzies, qids):
+    async def fetch_candidates_batch_async(self, entities, fuzzies, qids: List[List[str]]):
         """
         This used to be Alligator.fetch_candidates_batch_async.
         """
@@ -168,8 +168,8 @@ class CandidateFetcher(DatabaseAccessMixin):
         to_fetch = []
 
         # Decide which entities need to be fetched
-        for entity_name, fuzzy, qid_str in zip(entities, fuzzies, qids):
-            forced_qids = qid_str.split() if qid_str else []
+        for entity_name, fuzzy, qids in zip(entities, fuzzies, qids):
+            qid_str = " ".join(qids) if qids else ""
 
             if cache := self.get_candidate_cache():
                 cache_key = get_cache_key(
@@ -186,9 +186,9 @@ class CandidateFetcher(DatabaseAccessMixin):
                 cached_result = None
 
             if cached_result is not None:
-                if forced_qids:
+                if len(qids) > 0:
                     cached_qids = {c["id"] for c in cached_result if "id" in c}
-                    if all(q in cached_qids for q in forced_qids):
+                    if all(q in cached_qids for q in qids):
                         results[entity_name] = cached_result
                     else:
                         to_fetch.append((entity_name, fuzzy, qid_str))

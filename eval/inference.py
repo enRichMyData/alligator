@@ -63,7 +63,7 @@ async def main(args: argparse.Namespace):
             entity = row["entity"]
             correct_qids[f"{int(row_id) - int(min_row_is_one)}-{col_id}"] = re.findall(
                 r"Q\d+", entity
-            )[0]
+            )
 
         tic = time.perf_counter()
         args.gator.input_csv = table_path

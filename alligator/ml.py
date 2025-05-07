@@ -114,7 +114,6 @@ class MLWorker(DatabaseAccessMixin):
         cand_collection: Collection = db["candidates"]
         input_collection: Collection = db[self.input_collection]
 
-        # 1) Claim a batch of documents to process
         batch_docs = []
         for _ in range(self.batch_size):
             doc = input_collection.find_one_and_update(
@@ -124,21 +123,31 @@ class MLWorker(DatabaseAccessMixin):
             )
             if doc is None:
                 break
+
             doc["candidates"] = {}
-            candidate_records = cand_collection.find(
-                {"row_id": str(doc["row_id"]), "owner_id": doc["_id"]},
-                projection={"_id": 0, "candidates": 1, "col_id": 1},
-            )
-            for record in candidate_records:
-                col_id = record.get("col_id")
-                candidates = record.get("candidates", [])
+            batch_docs.append(doc)
+        if not batch_docs:
+            return 0
+
+        doc_ids = list({doc["_id"] for doc in batch_docs})
+        row_ids = list({str(doc["row_id"]) for doc in batch_docs})
+        doc_map = {(str(doc["row_id"]), doc["_id"]): doc for doc in batch_docs}
+
+        # Step 4: Fetch all candidates in a single query
+        candidates_cursor = cand_collection.find(
+            {"row_id": {"$in": row_ids}, "owner_id": {"$in": doc_ids}},
+            projection={"_id": 0, "candidates": 1, "col_id": 1, "row_id": 1, "owner_id": 1},
+        )
+        for record in candidates_cursor:
+            row_id = record.get("row_id")
+            owner_id = record.get("owner_id")
+            col_id = record.get("col_id")
+            candidates = record.get("candidates", [])
+            doc = doc_map.get((row_id, owner_id))
+            if doc:
                 if col_id not in doc["candidates"]:
                     doc["candidates"][col_id] = []
                 doc["candidates"][col_id].extend(candidates)
-            batch_docs.append(doc)
-
-        if not batch_docs:
-            return 0
 
         # 2) Assign global frequencies to each candidate, extract features, etc.
         all_candidates = []

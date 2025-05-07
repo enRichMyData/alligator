@@ -196,6 +196,7 @@ class MongoWrapper(DatabaseAccessMixin):
         )
 
         candidate_collection.create_index([("owner_id", ASCENDING)])
+        candidate_collection.create_index([("owner_id", ASCENDING), ("row_id", ASCENDING)])
         candidate_collection.create_index([("row_id", ASCENDING), ("col_id", ASCENDING)])
         candidate_collection.create_index(
             [

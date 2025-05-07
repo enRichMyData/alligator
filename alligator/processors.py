@@ -11,7 +11,7 @@ from alligator.feature import Feature
 from alligator.fetchers import CandidateFetcher, LiteralFetcher, ObjectFetcher
 from alligator.mongo import MongoWrapper
 from alligator.typing import Candidate, Entity, RowData
-from alligator.utils import ColumnHelper
+from alligator.utils import ColumnHelper, clean_str
 
 
 class RowBatchProcessor(DatabaseAccessMixin):
@@ -27,6 +27,7 @@ class RowBatchProcessor(DatabaseAccessMixin):
         object_fetcher: ObjectFetcher | None = None,
         literal_fetcher: LiteralFetcher | None = None,
         max_candidates_in_result: int = 5,
+        fuzzy_retry: bool = False,
         **kwargs,
     ):
         self.feature = feature
@@ -34,6 +35,7 @@ class RowBatchProcessor(DatabaseAccessMixin):
         self.object_fetcher = object_fetcher
         self.literal_fetcher = literal_fetcher
         self.max_candidates_in_result = max_candidates_in_result
+        self.fuzzy_retry = fuzzy_retry
         self._db_name = kwargs.get("db_name", "alligator_db")
         self._mongo_uri = kwargs.get("mongo_uri", "mongodb://gator-mongodb:27017")
         self.input_collection = kwargs.get("input_collection", "input_data")
@@ -70,6 +72,8 @@ class RowBatchProcessor(DatabaseAccessMixin):
 
         for doc in docs:
             row = doc["data"]
+            for col_idx, value in enumerate(row):
+                row[col_idx] = clean_str(value)
             ne_columns = doc["classified_columns"].get("NE", {})
             lit_columns = doc["classified_columns"].get("LIT", {})
             context_columns = doc.get("context_columns", [])
@@ -107,16 +111,15 @@ class RowBatchProcessor(DatabaseAccessMixin):
                     continue
 
                 # Normalize value
-                normalized_value = str(cell_value).strip().replace("_", " ").lower()
-                correct_qid = correct_qids.get(f"{row_index}-{normalized_col}")
+                qids = correct_qids.get(f"{row_index}-{normalized_col}", [])
 
                 # Create entity
                 entity = Entity(
-                    value=normalized_value,
+                    value=cell_value,
                     row_index=row_index,
                     col_index=normalized_col,
                     context_text=context_text,
-                    correct_qid=correct_qid,
+                    correct_qids=qids,
                     fuzzy=False,
                 )
                 entities.append(entity)
@@ -130,23 +133,22 @@ class RowBatchProcessor(DatabaseAccessMixin):
         # Initial fetch
         initial_results = await self.candidate_fetcher.fetch_candidates_batch(
             entities=[e.value for e in entities],
-            row_texts=[e.context_text for e in entities],
             fuzzies=[e.fuzzy for e in entities],
-            qids=[e.correct_qid for e in entities],
+            qids=[e.correct_qids if e.correct_qids is not None else [] for e in entities],
         )
 
         # Find entities needing fuzzy retry
-        retry_entities = []
+        retry_entities: List[Entity] = []
         for entity in entities:
             candidates = initial_results.get(entity.value, [])
-            if len(candidates) <= 1:
+            if self.fuzzy_retry and len(candidates) <= 1:
                 # Create a copy of the entity with fuzzy=True
                 retry_entity = Entity(
                     value=entity.value,
                     row_index=entity.row_index,
                     col_index=entity.col_index,
                     context_text=entity.context_text,
-                    correct_qid=entity.correct_qid,
+                    correct_qids=entity.correct_qids,
                     fuzzy=True,
                 )
                 retry_entities.append(retry_entity)
@@ -155,9 +157,10 @@ class RowBatchProcessor(DatabaseAccessMixin):
         if retry_entities:
             retry_results = await self.candidate_fetcher.fetch_candidates_batch(
                 entities=[e.value for e in retry_entities],
-                row_texts=[e.context_text for e in retry_entities],
                 fuzzies=[e.fuzzy for e in retry_entities],
-                qids=[e.correct_qid for e in retry_entities],
+                qids=[
+                    e.correct_qids if e.correct_qids is not None else [] for e in retry_entities
+                ],
             )
 
             # Update with retry results
@@ -187,7 +190,7 @@ class RowBatchProcessor(DatabaseAccessMixin):
         for row_data in row_data_list:
             entity_ids = set()
             candidates_by_col = {}
-            row_value = " ".join(str(v) for v in row_data.row).lower()
+            row_value = " ".join(str(v) for v in row_data.row)
             for col_idx, ner_type in row_data.ne_columns.items():
                 normalized_col = ColumnHelper.normalize(col_idx)
                 if not ColumnHelper.is_valid_index(normalized_col, len(row_data.row)):
@@ -197,7 +200,7 @@ class RowBatchProcessor(DatabaseAccessMixin):
                 if not cell_value or pd.isna(cell_value):
                     continue
 
-                entity_value = str(cell_value).strip().replace("_", " ").lower()
+                entity_value = clean_str(cell_value)
                 mention_candidates = candidates.get(entity_value, [])
                 if mention_candidates:
                     candidates_by_col[normalized_col] = mention_candidates

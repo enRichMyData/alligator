@@ -1,12 +1,18 @@
 from collections import Counter, defaultdict
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
-from pymongo.collection import Collection
 
 from alligator.database import DatabaseAccessMixin
 from alligator.typing import Candidate, LiteralsData, ObjectsData
-from alligator.utils import ColumnHelper, ngrams, tokenize_text
+from alligator.utils import (
+    ColumnHelper,
+    clean_str,
+    compute_similarity_between_dates,
+    compute_similarity_between_string,
+    compute_similarity_between_string_token_based,
+    compute_similarty_between_numbers,
+)
 
 DEFAULT_FEATURES = [
     "ambiguity_mention",
@@ -46,17 +52,18 @@ class Feature(DatabaseAccessMixin):
         self,
         dataset_name: str,
         table_name: str,
-        top_n_for_type_freq: int = 5,
+        top_n_cta_cpa_freq: int = 3,
         features: Optional[List[str]] = None,
         **kwargs,
     ):
         self.dataset_name = dataset_name
         self.table_name = table_name
-        self.top_n_for_type_freq = top_n_for_type_freq
+        self.top_n_cta_cpa_freq = top_n_cta_cpa_freq
         self.selected_features = features or DEFAULT_FEATURES
         self._db_name = kwargs.pop("db_name", "alligator_db")
         self._mongo_uri = kwargs.pop("mongo_uri", "mongodb://gator-mongodb:27017/")
         self.input_collection = kwargs.get("input_collection", "input_data")
+        self._predicate_frequencies = None
 
     def map_kind_to_numeric(self, kind: str) -> int:
         mapping: Dict[str, int] = {
@@ -67,18 +74,6 @@ class Feature(DatabaseAccessMixin):
         }
         return mapping.get(kind, 1)
 
-    def calculate_token_overlap(self, tokens_a: Set[str], tokens_b: Set[str]) -> float:
-        intersection: Set[str] = tokens_a & tokens_b
-        union: Set[str] = tokens_a | tokens_b
-        return len(intersection) / len(union) if union else 0.0
-
-    def calculate_ngram_similarity(self, a: str, b: str, n: int = 3) -> float:
-        a_ngrams: List[str] = ngrams(a, n)
-        b_ngrams: List[str] = ngrams(b, n)
-        intersection: int = len(set(a_ngrams) & set(b_ngrams))
-        union: int = len(set(a_ngrams) | set(b_ngrams))
-        return intersection / union if union > 0 else 0.0
-
     def process_candidates(
         self, candidates: List[Candidate], entity_name: Optional[str], row: Optional[str]
     ) -> None:
@@ -87,6 +82,8 @@ class Feature(DatabaseAccessMixin):
         """
         # Use a safe version of entity_name for computations.
         safe_entity_name: str = entity_name if entity_name is not None else ""
+        safe_row = row if row is not None else ""
+        safe_row = clean_str(safe_row)
 
         for candidate in candidates:
             # Retrieve original values, which might be None.
@@ -95,17 +92,21 @@ class Feature(DatabaseAccessMixin):
 
             # Create safe versions for computation.
             safe_candidate_name: str = candidate_name if candidate_name is not None else ""
+            safe_candidate_name = clean_str(safe_candidate_name)
             safe_candidate_description: str = (
                 candidate_description if candidate_description is not None else ""
             )
+            safe_candidate_description = clean_str(safe_candidate_description)
 
             desc: float = 0.0
             descNgram: float = 0.0
             if safe_candidate_description:
-                desc = self.calculate_token_overlap(
-                    tokenize_text(row), tokenize_text(safe_candidate_description)
+                desc = compute_similarity_between_string(
+                    safe_candidate_description, row, ngram=None
                 )
-                descNgram = self.calculate_ngram_similarity(row, safe_candidate_description)
+                descNgram = compute_similarity_between_string(
+                    safe_candidate_description, row, ngram=3
+                )
 
             # Initialize all default features with default values
             candidate_features: Dict[str, Any] = candidate.features
@@ -155,99 +156,122 @@ class Feature(DatabaseAccessMixin):
             # Preserve the original candidate values, even if they are None
             candidate.features = features
 
-    def compute_global_type_frequencies(
-        self,
-        docs_to_process: Optional[float] = None,
-        random_sample: bool = False,
-        doc_range: Optional[tuple] = None,
-    ) -> Dict[Any, Counter]:
-        """Compute type frequencies across candidate documents.
+    def compute_global_frequencies(
+        self, docs_to_process: float = 1.0, random_sample: bool = False
+    ) -> Tuple[Dict[Any, Counter], Dict[Any, Counter]]:
+        """
+        Compute global type frequencies (CTA) and predicate frequencies (CPA) across all columns.
 
         Args:
-            docs_to_process: Percentage of documents to process. If None, processes all documents.
-                Use this to limit computation time for very large datasets.
-            random_sample: If True and docs_to_process is specified, samples documents randomly.
-            doc_range: Optional tuple (start, end) to process a specific document range.
-                Takes precedence over random_sample.
+            docs_to_process: Fraction of documents to use (0.0-1.0)
+            random_sample: Whether to randomly sample documents
 
         Returns:
-            Dictionary mapping column indexes to type frequency counters.
+            Tuple of (type_frequencies, predicate_frequencies) where each is a dict
+            mapping column indices to Counter objects with frequency data
         """
-        col: Collection = self.get_db()[self.input_collection]
-        type_freq_by_column = defaultdict(Counter)
-        rows_count_by_column = Counter()
+        db = self.get_db()
+        input_collection = db[self.input_collection]
 
-        # Base query to find documents with candidates
-        match_query = {
+        # Get the count of documents
+        total_docs = input_collection.count_documents(
+            {
+                "dataset_name": self.dataset_name,
+                "table_name": self.table_name,
+                "status": "DONE",  # Only consider processed documents
+            }
+        )
+
+        # Calculate how many documents to process
+        if docs_to_process is None or docs_to_process >= 1.0:
+            docs_to_get = total_docs
+        else:
+            docs_to_get = max(1, int(total_docs * docs_to_process))
+
+        # Build the query
+        query = {
             "dataset_name": self.dataset_name,
             "table_name": self.table_name,
             "status": "DONE",
             "rank_status": "DONE",
-            "candidates": {"$exists": True},
         }
-        projection = {"candidates": 1}
+        projection = {"candidates": 1, "classified_columns": 1}
 
-        # Choose sampling strategy
-        if doc_range:
-            start, end = doc_range
-            print(f"Processing documents in range {start} to {end}")
-            cursor = col.find(match_query, projection).skip(start).limit(end - start)
-        elif docs_to_process and random_sample:
+        total_docs = input_collection.count_documents(query)
+        if random_sample:
             # Use aggregation pipeline with $sample for random sampling
-            total_docs = col.count_documents(match_query)
-            max_docs = max(1, int(total_docs * docs_to_process))
-            print(f"Computing type-frequency features by randomly sampling {max_docs} documents")
+            print(
+                f"Computing type-frequency features by randomly sampling {docs_to_get} documents"
+            )
             pipeline = [
-                {"$match": match_query},
-                {"$sample": {"size": max_docs}},
+                {"$match": query},
+                {"$sample": {"size": docs_to_get}},
                 {"$project": projection},
             ]
-            cursor = col.aggregate(pipeline)
+            cursor = input_collection.aggregate(pipeline)
         else:
             # Simple limit if specified
-            cursor = col.find(match_query, projection)
-            if docs_to_process:
-                total_docs = col.count_documents(match_query)
-                max_docs = max(1, int(total_docs * docs_to_process))
-                print(
-                    f"Computing type-frequency features by processing first {max_docs} documents"
-                )
-                cursor = cursor.limit(max_docs)
-            else:
-                print("Computing type-frequency features by processing all matching documents")
+            print(f"Computing type-frequency features by processing first {docs_to_get} documents")
+            cursor = input_collection.find(query, projection)
+            cursor = cursor.limit(docs_to_get)
 
-        # Process documents to calculate type frequencies
-        doc_count = 0
+        # Initialize counters
+        type_frequencies = defaultdict(Counter)
+        predicate_frequencies = defaultdict(Counter)
+
+        # Process each document
+        n_docs = 0
         for doc in cursor:
-            doc_count += 1
-            candidates_by_column: Dict[Any, List[Dict[str, Any]]] = doc["candidates"]
+            n_docs += 1
 
-            for col_idx, candidates in candidates_by_column.items():
-                top_candidates = candidates[: self.top_n_for_type_freq]
-                row_qids = set()
+            ne_cols = doc.get("classified_columns", {}).get("NE", {})
+            candidates_by_column = doc.get("candidates", {})
 
-                for cand in top_candidates:
-                    for t_dict in cand.get("types", []):
-                        qid = t_dict.get("id")
-                        if qid:
-                            row_qids.add(qid)
+            # Process each NE column
+            for col_idx in ne_cols:
+                candidates = candidates_by_column.get(col_idx, [])
 
-                for qid in row_qids:
-                    type_freq_by_column[col_idx][qid] += 1
+                # Skip if no candidates
+                if not candidates:
+                    continue
 
-                rows_count_by_column[col_idx] += 1
+                # Track types and predicates we've seen for this cell (to avoid double-counting)
+                seen_types = set()
+                seen_predicates = set()
 
-        # Normalize frequencies
-        for col_idx, freq_counter in type_freq_by_column.items():
-            row_count: int = rows_count_by_column[col_idx]
-            if row_count == 0:
-                continue
-            # Convert each type's raw count to a ratio in [0..1]
-            for qid in freq_counter:
-                freq_counter[qid] = freq_counter[qid] / row_count
+                # Consider top 3 candidates (as in FeaturesExtractionRevision)
+                for candidate in candidates[: self.top_n_cta_cpa_freq]:
+                    # Process types (CTA)
+                    for type_obj in candidate.get("types", []):
+                        type_id = type_obj.get("id")
+                        if type_id and type_id not in seen_types:
+                            type_frequencies[col_idx][type_id] += 1
+                            seen_types.add(type_id)
 
-        print(f"Computed type frequencies from {doc_count} documents")
-        return type_freq_by_column
+                    # Process predicates (CPA)
+                    predicates = candidate.get("predicates", {})
+                    for rel_col_idx, rel_predicates in predicates.items():
+                        for pred_id, pred_value in rel_predicates.items():
+                            if pred_id and pred_id not in seen_predicates:
+                                # Update global predicate counter
+                                predicate_frequencies[col_idx][pred_id] += 1 * pred_value
+                                seen_predicates.add(pred_id)
+
+        # Normalize frequencies by document count
+        if n_docs > 0:
+            for col_idx in type_frequencies:
+                for type_id in type_frequencies[col_idx]:
+                    type_frequencies[col_idx][type_id] = (
+                        type_frequencies[col_idx][type_id] / n_docs
+                    )
+
+            for col_idx in predicate_frequencies:
+                for pred_id in predicate_frequencies[col_idx]:
+                    predicate_frequencies[col_idx][pred_id] = (
+                        predicate_frequencies[col_idx][pred_id] / n_docs
+                    )
+
+        return type_frequencies, predicate_frequencies
 
     def compute_entity_entity_relationships(
         self,
@@ -270,6 +294,7 @@ class Feature(DatabaseAccessMixin):
                     continue
 
                 # Process each subject candidate
+                object_rel_score_buffer = {}
                 for subj_candidate in subj_candidates:
                     subj_id = subj_candidate.id
                     if not subj_id or subj_id not in objects_data:
@@ -289,7 +314,6 @@ class Feature(DatabaseAccessMixin):
 
                     # Calculate maximum object score for this subject
                     obj_score_max = 0
-                    object_rel_score_buffer = {}
 
                     for obj_candidate in obj_candidates:
                         obj_id = obj_candidate.id
@@ -309,7 +333,8 @@ class Feature(DatabaseAccessMixin):
                         obj_score_max = max(obj_score_max, p_subj_ne)
 
                         # Track the best score for each object
-                        object_rel_score_buffer[obj_id] = object_rel_score_buffer.get(obj_id, 0)
+                        if obj_id not in object_rel_score_buffer:
+                            object_rel_score_buffer[obj_id] = 0
 
                         # Calculate reverse score from subject to object
                         subj_string_features = []
@@ -317,11 +342,10 @@ class Feature(DatabaseAccessMixin):
                             if feature_name in subj_candidate.features:
                                 subj_string_features.append(subj_candidate.features[feature_name])
 
-                        if subj_string_features:
-                            score_rel = sum(subj_string_features) / len(subj_string_features)
-                            object_rel_score_buffer[obj_id] = max(
-                                object_rel_score_buffer[obj_id], score_rel
-                            )
+                        score_rel = sum(subj_string_features) / len(subj_string_features)
+                        object_rel_score_buffer[obj_id] = max(
+                            object_rel_score_buffer[obj_id], score_rel
+                        )
 
                         # Record predicates connecting subject to object
                         for predicate in subj_objects.get(obj_id, []):
@@ -331,16 +355,15 @@ class Feature(DatabaseAccessMixin):
                             subj_candidate.predicates[obj_col][predicate] = p_subj_ne
 
                     # Normalize and update subject's feature
-                    if obj_score_max > 0:
-                        subj_candidate.features["p_subj_ne"] += obj_score_max / n_ne_cols
+                    subj_candidate.features["p_subj_ne"] += obj_score_max / n_ne_cols
 
-                    # Update object candidates' features
-                    for obj_candidate in obj_candidates:
-                        obj_id = obj_candidate.id
-                        if obj_id in object_rel_score_buffer:
-                            obj_candidate.features["p_obj_ne"] += (
-                                object_rel_score_buffer[obj_id] / n_ne_cols
-                            )
+                # Update object candidates' features
+                for obj_candidate in obj_candidates:
+                    obj_id = obj_candidate.id
+                    if obj_id in object_rel_score_buffer:
+                        obj_candidate.features["p_obj_ne"] += (
+                            object_rel_score_buffer[obj_id] / n_ne_cols
+                        )
 
     def compute_entity_literal_relationships(
         self,
@@ -361,10 +384,8 @@ class Feature(DatabaseAccessMixin):
             return
 
         # Get row text tokens
-        row_text_all = " ".join(str(v) for v in row if pd.notna(v)).lower()
-        row_text_lit = " ".join(
-            str(row[int(c)]) for c in lit_columns if int(c) < len(row) and pd.notna(row[int(c)])
-        ).lower()
+        row_text_all = clean_str(" ".join(str(v) for v in row))
+        row_text_lit = clean_str(" ".join(str(row[int(c)]) for c in lit_columns))
 
         # Process each subject (NE) candidate
         for subj_col, subj_candidates in all_candidates_by_col.items():
@@ -382,31 +403,18 @@ class Feature(DatabaseAccessMixin):
                 lit_values = []
                 for datatype in subj_literals:
                     for predicate in subj_literals[datatype]:
-                        lit_values.extend(
-                            str(val).lower() for val in subj_literals[datatype][predicate]
-                        )
-
+                        for value in subj_literals[datatype][predicate]:
+                            if value.startswith("+") and value[1:].isdigit():
+                                value = value[1:]
+                            lit_values.append(str(value).lower())
                 lit_string = " ".join(lit_values)
 
-                # Calculate token-based similarity
-
-                lit_tokens = set(tokenize_text(lit_string))
-                row_all_tokens = set(tokenize_text(row_text_all))
-                row_lit_tokens = set(tokenize_text(row_text_lit))
-
-                p_subj_lit_all_datatype = (
-                    len(lit_tokens & row_lit_tokens) / len(lit_tokens | row_lit_tokens)
-                    if lit_tokens and row_lit_tokens
-                    else 0
-                )
-                p_subj_lit_row = (
-                    len(lit_tokens & row_all_tokens) / len(lit_tokens | row_all_tokens)
-                    if lit_tokens and row_all_tokens
-                    else 0
-                )
-
-                subj_candidate.features["p_subj_lit_all_datatype"] = p_subj_lit_all_datatype
-                subj_candidate.features["p_subj_lit_row"] = p_subj_lit_row
+                subj_candidate.features[
+                    "p_subj_lit_all_datatype"
+                ] = compute_similarity_between_string_token_based(lit_string, row_text_lit)
+                subj_candidate.features[
+                    "p_subj_lit_row"
+                ] = compute_similarity_between_string_token_based(lit_string, row_text_all)
 
                 # Process each literal column
                 for lit_col, lit_type in lit_columns.items():
@@ -419,10 +427,7 @@ class Feature(DatabaseAccessMixin):
                         continue
 
                     lit_value = str(lit_value).lower()
-                    lit_datatype = lit_type.upper()  # Normalize datatype
-
-                    # Find matching datatype in literals
-                    normalized_datatype = lit_datatype.lower()
+                    normalized_datatype = lit_type.upper()
                     if normalized_datatype not in subj_literals:
                         continue
 
@@ -434,47 +439,16 @@ class Feature(DatabaseAccessMixin):
 
                             # Calculate similarity based on datatype
                             p_subj_lit = 0.0
-                            if lit_datatype == "NUMBER":
-                                # Simple numeric similarity (could be improved)
-                                try:
-                                    num1 = float(lit_value)
-                                    num2 = float(kg_value)
-                                    if num1 == num2:
-                                        p_subj_lit = 1.0
-                                    else:
-                                        max_val = max(abs(num1), abs(num2))
-                                        diff = abs(num1 - num2)
-                                        if max_val > 0:
-                                            p_subj_lit = max(0, 1 - (diff / max_val))
-                                except (ValueError, TypeError):
-                                    pass
-                            elif lit_datatype == "DATETIME":
-                                # Simple string comparison for dates (could be improved)
-                                if lit_value == kg_value:
-                                    p_subj_lit = 1.0
-                                else:
-                                    # Simple substring match
-                                    p_subj_lit = (
-                                        0.5
-                                        if (lit_value in kg_value or kg_value in lit_value)
-                                        else 0
-                                    )
-                            else:  # STRING
-                                # Use token-based similarity
-                                lit_tokens = set(tokenize_text(lit_value))
-                                kg_tokens = set(tokenize_text(kg_value))
-                                if lit_tokens and kg_tokens:
-                                    p_subj_lit = len(lit_tokens & kg_tokens) / len(
-                                        lit_tokens | kg_tokens
-                                    )
-
+                            if lit_type == "NUMBER":
+                                p_subj_lit = compute_similarty_between_numbers(lit_value, kg_value)
+                            elif normalized_datatype == "DATETIME":
+                                p_subj_lit = compute_similarity_between_dates(lit_value, kg_value)
+                            elif normalized_datatype == "STRING":
+                                p_subj_lit = compute_similarity_between_string(lit_value, kg_value)
                             if p_subj_lit > 0:
-                                # Record match
                                 subj_candidate.matches[normalized_lit_col].append(
                                     {"p": predicate, "o": kg_value, "s": p_subj_lit}
                                 )
-
-                                # Update maximum score
                                 max_score = max(max_score, p_subj_lit)
 
                                 # Update predicates
@@ -486,5 +460,4 @@ class Feature(DatabaseAccessMixin):
                                 )
 
                     # Normalize and update feature
-                    if max_score > 0:
-                        subj_candidate.features["p_subj_lit_datatype"] += max_score / n_lit_cols
+                    subj_candidate.features["p_subj_lit_datatype"] += max_score / n_lit_cols

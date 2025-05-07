@@ -69,28 +69,25 @@ class CandidateFetcher(DatabaseAccessMixin):
     async def fetch_candidates_batch(
         self,
         entities: List[str],
-        row_texts: List[str],
         fuzzies: List[bool],
-        qids: List[Optional[str]],
+        qids: List[List[str]],
     ) -> Dict[str, List[dict]]:
         """
         Fetch candidates for multiple entities in a batch.
 
         Args:
             entities: List of entity names to find candidates for
-            row_texts: Context text for each entity
             fuzzies: Whether to use fuzzy matching for each entity
             qids: Known correct QIDs for each entity (optional)
 
         Returns:
             Dictionary mapping entity names to lists of candidate dictionaries
         """
-        return await self.fetch_candidates_batch_async(entities, row_texts, fuzzies, qids)
+        return await self.fetch_candidates_batch_async(entities, fuzzies, qids)
 
     async def _fetch_candidates(
         self,
         entity_name,
-        row_text,
         fuzzy,
         qid,
         session,
@@ -163,7 +160,7 @@ class CandidateFetcher(DatabaseAccessMixin):
         # If all attempts fail
         return entity_name, []
 
-    async def fetch_candidates_batch_async(self, entities, row_texts, fuzzies, qids):
+    async def fetch_candidates_batch_async(self, entities, fuzzies, qids: List[List[str]]):
         """
         This used to be Alligator.fetch_candidates_batch_async.
         """
@@ -171,8 +168,8 @@ class CandidateFetcher(DatabaseAccessMixin):
         to_fetch = []
 
         # Decide which entities need to be fetched
-        for entity_name, fuzzy, row_text, qid_str in zip(entities, fuzzies, row_texts, qids):
-            forced_qids = qid_str.split() if qid_str else []
+        for entity_name, fuzzy, qids in zip(entities, fuzzies, qids):
+            qid_str = " ".join(qids) if qids else ""
 
             if cache := self.get_candidate_cache():
                 cache_key = get_cache_key(
@@ -189,16 +186,16 @@ class CandidateFetcher(DatabaseAccessMixin):
                 cached_result = None
 
             if cached_result is not None:
-                if forced_qids:
+                if len(qids) > 0:
                     cached_qids = {c["id"] for c in cached_result if "id" in c}
-                    if all(q in cached_qids for q in forced_qids):
+                    if all(q in cached_qids for q in qids):
                         results[entity_name] = cached_result
                     else:
-                        to_fetch.append((entity_name, fuzzy, row_text, qid_str))
+                        to_fetch.append((entity_name, fuzzy, qid_str))
                 else:
                     results[entity_name] = cached_result
             else:
-                to_fetch.append((entity_name, fuzzy, row_text, qid_str))
+                to_fetch.append((entity_name, fuzzy, qid_str))
 
         if not to_fetch:
             return self._remove_placeholders(results)
@@ -207,10 +204,8 @@ class CandidateFetcher(DatabaseAccessMixin):
             timeout=MY_TIMEOUT, connector=aiohttp.TCPConnector(ssl=False, limit=10)
         ) as session:
             tasks = []
-            for entity_name, fuzzy, row_text, qid_str in to_fetch:
-                tasks.append(
-                    self._fetch_candidates(entity_name, row_text, fuzzy, qid_str, session)
-                )
+            for entity_name, fuzzy, qid_str in to_fetch:
+                tasks.append(self._fetch_candidates(entity_name, fuzzy, qid_str, session))
             done = await asyncio.gather(*tasks, return_exceptions=False)
             for entity_name, candidates in done:
                 results[entity_name] = candidates

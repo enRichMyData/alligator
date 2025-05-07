@@ -3,10 +3,9 @@ import multiprocessing as mp
 import os
 import time
 import uuid
-from collections import Counter
 from functools import partial
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Counter, Dict, List, Optional, Tuple
 
 import pandas as pd
 from column_classifier import ColumnClassifier
@@ -41,7 +40,7 @@ class Alligator(DatabaseAccessMixin):
         dataset_name: str | None = None,
         table_name: str | None = None,
         columns_type: ColType | None = None,
-        worker_batch_size: int = 128,
+        worker_batch_size: int = 64,
         num_workers: Optional[int] = None,
         max_candidates_in_result: int = 5,
         entity_retrieval_endpoint: Optional[str] = None,
@@ -52,13 +51,13 @@ class Alligator(DatabaseAccessMixin):
         candidate_retrieval_limit: int = 16,
         ranker_model_path: Optional[str] = None,
         reranker_model_path: Optional[str] = None,
-        ml_worker_batch_size: int = 1024,
+        ml_worker_batch_size: int = 256,
         num_ml_workers: int = 2,
-        top_n_for_type_freq: int = 3,
+        top_n_cta_cpa_freq: int = 3,
         doc_percentage_type_features: float = 1.0,
         save_output: bool = True,
         save_output_to_csv: bool = True,
-        correct_qids: Dict[str, str] | None = None,
+        correct_qids: Dict[str, str | List[str]] | None = None,
         **kwargs,
     ) -> None:
         if input_csv is None:
@@ -104,7 +103,7 @@ class Alligator(DatabaseAccessMixin):
         )
         self.ml_worker_batch_size = ml_worker_batch_size
         self.num_ml_workers = num_ml_workers
-        self.top_n_for_type_freq = top_n_for_type_freq
+        self.top_n_cta_cpa_freq = top_n_cta_cpa_freq
         self.doc_percentage_type_features = doc_percentage_type_features
         if not (0 < self.doc_percentage_type_features <= 1):
             raise ValueError("doc_percentage_type_features must be between 0 and 1 (exclusive).")
@@ -113,6 +112,11 @@ class Alligator(DatabaseAccessMixin):
         self._save_output = save_output
         self._save_output_to_csv = save_output_to_csv
         self.correct_qids = correct_qids or {}
+        for key, value in self.correct_qids.items():
+            if isinstance(value, str):
+                self.correct_qids[key] = [value]
+            elif not isinstance(value, list):
+                raise ValueError(f"Correct QIDs for {key} must be a string or a list of strings.")
         self._dry_run = kwargs.pop("dry_run", False)
         self.mongo_wrapper = MongoWrapper(
             self._mongo_uri,
@@ -123,7 +127,7 @@ class Alligator(DatabaseAccessMixin):
         self.feature = Feature(
             dataset_name,
             table_name,
-            top_n_for_type_freq=top_n_for_type_freq,
+            top_n_cta_cpa_freq=top_n_cta_cpa_freq,
             features=selected_features,
             db_name=self._DB_NAME,
             mongo_uri=self._mongo_uri,
@@ -189,22 +193,6 @@ class Alligator(DatabaseAccessMixin):
         except Exception:
             pass
 
-    def claim_todo_batch(self, input_collection, batch_size=16):
-        docs = []
-        for _ in range(batch_size):
-            doc = input_collection.find_one_and_update(
-                {
-                    "dataset_name": self.dataset_name,
-                    "table_name": self.table_name,
-                    "status": "TODO",
-                },
-                {"$set": {"status": "DOING"}},
-            )
-            if doc is None:
-                break
-            docs.append(doc)
-        return docs
-
     def onboard_data(
         self,
         dataset_name: str | None = None,
@@ -225,32 +213,42 @@ class Alligator(DatabaseAccessMixin):
             total_rows = len(df)
             is_csv_path = False
         else:
-            sample = pd.read_csv(self.input_csv, nrows=1)
+            sample = pd.read_csv(self.input_csv, nrows=32)
             total_rows = -1
             is_csv_path = True
 
         print(f"Onboarding {total_rows} rows for dataset '{dataset_name}', table '{table_name}'")
 
         # Step 2: Perform column classification
-        if columns_type is None:
-            classifier = ColumnClassifier(model_type="fast")
-            classification_results = classifier.classify_multiple_tables([sample])
-            table_classification = classification_results[0].get("table_1", {})
+        classifier = ColumnClassifier(model_type="fast")
+        classification_results = classifier.classify_multiple_tables([sample])
+        table_classification = classification_results[0].get("table_1", {})
 
-            ne_cols, lit_cols, ignored_cols = {}, {}, []
-            NE_classifications = {"PERSON", "OTHER", "ORGANIZATION", "LOCATION"}
+        ne_cols, lit_cols, ignored_cols = {}, {}, []
+        ne_types = {"PERSON", "OTHER", "ORGANIZATION", "LOCATION"}
+        lit_types = {"NUMBER", "DATE", "STRING"}
 
-            for idx, col in enumerate(sample.columns):
-                col_result = table_classification.get(col, {})
-                classification = col_result.get("classification", "UNKNOWN")
-                if classification in NE_classifications:
-                    ne_cols[str(idx)] = classification
-                else:
-                    lit_cols[str(idx)] = classification
-        else:
-            ne_cols = columns_type.get("NE", {})
-            lit_cols = columns_type.get("LIT", {})
-            ignored_cols = columns_type.get("IGNORED", [])
+        classified_columns = {}
+        for idx, col in enumerate(sample.columns):
+            col_result = table_classification.get(col, {})
+            classification = col_result.get("classification", "UNKNOWN")
+            if classification in ne_types:
+                ne_cols[str(idx)] = classification
+            elif classification in lit_types:
+                if classification == "DATE":
+                    classification = "DATETIME"
+                lit_cols[str(idx)] = classification
+            classified_columns[str(idx)] = classification
+
+        if columns_type is not None:
+            ne_cols = columns_type.get("NE", ne_cols)
+            for col in ne_cols:
+                ne_cols[col] = classified_columns.get(col, "UNKNOWN")
+            lit_cols = columns_type.get("LIT", lit_cols)
+            for col in lit_cols:
+                if not lit_cols[col]:
+                    lit_cols[col] = classified_columns.get(col, "UNKNOWN")
+            ignored_cols = columns_type.get("IGNORED", ignored_cols)
 
         all_recognized_cols = set(ne_cols.keys()) | set(lit_cols.keys())
         all_cols = set([str(i) for i in range(len(sample.columns))])
@@ -258,6 +256,7 @@ class Alligator(DatabaseAccessMixin):
             ignored_cols.extend(list(all_cols - all_recognized_cols))
         ignored_cols = list(set(ignored_cols))
         context_cols = list(set([str(i) for i in range(len(sample.columns))]) - set(ignored_cols))
+        context_cols = sorted(context_cols, key=lambda x: int(x))
 
         # Step 3: Define a chunk generator function
         def get_chunks():
@@ -311,6 +310,8 @@ class Alligator(DatabaseAccessMixin):
                     key = f"{row_id}-{col_id}"
                     if key in self.correct_qids:
                         correct_qids[key] = self.correct_qids[key]
+                        if isinstance(correct_qids[key], str):
+                            correct_qids[key] = [correct_qids[key]]
                 document["correct_qids"] = correct_qids
                 documents.append(document)
 
@@ -489,7 +490,7 @@ class Alligator(DatabaseAccessMixin):
         self,
         rank: int,
         stage: str = "rank",
-        global_type_counts: Dict[Any, Counter] = {},
+        global_frequencies=Tuple[Dict[str, Counter] | None, Dict[str, Counter] | None],
     ):
         """Unified wrapper function for ML workers"""
         worker = MLWorker(
@@ -502,12 +503,12 @@ class Alligator(DatabaseAccessMixin):
             model_path=self.ranker_model_path if stage == "rank" else self.reranker_model_path,
             batch_size=self.ml_worker_batch_size,
             max_candidates_in_result=self.max_candidates_in_result if stage == "rerank" else -1,
-            top_n_for_type_freq=self.top_n_for_type_freq,
+            top_n_cta_cpa_freq=self.top_n_cta_cpa_freq,
             features=self.feature.selected_features,
             mongo_uri=self._mongo_uri,
             db_name=self._DB_NAME,
         )
-        return worker.run(global_type_counts=global_type_counts)
+        return worker.run(global_frequencies=global_frequencies)
 
     async def process_batch(self, docs):
         tasks_by_table = {}
@@ -522,12 +523,50 @@ class Alligator(DatabaseAccessMixin):
     async def worker_async(self, rank: int):
         db = self.get_db()
         input_collection = db[self._INPUT_COLLECTION]
-        while True:
-            todo_docs = self.claim_todo_batch(input_collection, batch_size=self.worker_batch_size)
-            print(f"Worker {rank} processing {len(todo_docs)} tasks...")
-            if not todo_docs:
-                print("No more tasks to process.")
-                break
+
+        # Count total documents to process
+        total_docs = input_collection.count_documents(
+            {
+                "dataset_name": self.dataset_name,
+                "table_name": self.table_name,
+            }
+        )
+
+        docs_per_worker = total_docs // self.num_workers
+        remainder = total_docs % self.num_workers
+
+        # Adjust batch size for this specific worker
+        # Give extra documents to earlier workers if not evenly divisible
+        if rank < remainder:
+            batch_size = docs_per_worker + 1
+            skip = rank * (docs_per_worker + 1)
+        else:
+            batch_size = docs_per_worker
+            skip = (remainder * (docs_per_worker + 1)) + ((rank - remainder) * docs_per_worker)
+        print(f"Worker {rank} started with batch size {batch_size}, skipping {skip}.")
+
+        # Find documents to process for this worker using skip/limit
+        cursor = (
+            input_collection.find(
+                {
+                    "dataset_name": self.dataset_name,
+                    "table_name": self.table_name,
+                }
+            )
+            .skip(skip)
+            .limit(batch_size)
+        )
+
+        todo_docs = []
+        for doc in cursor:
+            input_collection.update_one({"_id": doc["_id"]}, {"$set": {"status": "DOING"}})
+            if len(todo_docs) < self.worker_batch_size:
+                todo_docs.append(doc)
+            else:
+                await self.process_batch(todo_docs)
+                print(f"Worker {rank} processed {len(todo_docs)} documents.")
+                todo_docs = [doc]
+        if todo_docs:
             await self.process_batch(todo_docs)
 
     def worker(self, rank: int):
@@ -543,29 +582,35 @@ class Alligator(DatabaseAccessMixin):
         tasks = [self.worker_async(rank) for rank in range(self.num_workers)]
         await asyncio.gather(*tasks)
 
-        with mp.Pool(processes=self.num_ml_workers) as pool:
+        pool = mp.Pool(processes=self.num_workers)
+        try:
+            # First ML ranking stage (no global frequencies needed)
             pool.map(
                 partial(
                     self.ml_worker,
                     stage="rank",
-                    global_type_counts={},
+                    global_frequencies=(None, None),  # Empty tuple for first stage
                 ),
                 range(self.num_ml_workers),
             )
 
-        global_type_counts = self.feature.compute_global_type_frequencies(
-            docs_to_process=self.doc_percentage_type_features, random_sample=False
-        )
+            # Compute both type and predicate frequencies
+            type_frequencies, predicate_frequencies = self.feature.compute_global_frequencies(
+                docs_to_process=self.doc_percentage_type_features, random_sample=False
+            )
 
-        with mp.Pool(processes=self.num_ml_workers) as pool:
+            # Second ML ranking stage with global frequencies
             pool.map(
                 partial(
                     self.ml_worker,
                     stage="rerank",
-                    global_type_counts=global_type_counts,
+                    global_frequencies=(type_frequencies, predicate_frequencies),
                 ),
                 range(self.num_ml_workers),
             )
+        finally:
+            pool.close()
+            pool.join()
 
         print("All tasks have been processed.")
         if self._save_output:

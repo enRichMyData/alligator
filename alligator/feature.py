@@ -63,6 +63,7 @@ class Feature(DatabaseAccessMixin):
         self._db_name = kwargs.pop("db_name", "alligator_db")
         self._mongo_uri = kwargs.pop("mongo_uri", "mongodb://gator-mongodb:27017/")
         self.input_collection = kwargs.get("input_collection", "input_data")
+        self.candidate_collection = kwargs.get("candidate_collection", "candidates")
         self._predicate_frequencies = None
 
     def map_kind_to_numeric(self, kind: str) -> int:
@@ -195,7 +196,7 @@ class Feature(DatabaseAccessMixin):
             "status": "DONE",
             "rank_status": "DONE",
         }
-        projection = {"candidates": 1, "classified_columns": 1}
+        projection = {"classified_columns": 1, "row_id": 1, "_id": 1}
 
         total_docs = input_collection.count_documents(query)
         if random_sample:
@@ -221,25 +222,30 @@ class Feature(DatabaseAccessMixin):
 
         # Process each document
         n_docs = 0
+        cand_collection = db[self.candidate_collection]
         for doc in cursor:
             n_docs += 1
 
-            ne_cols = doc.get("classified_columns", {}).get("NE", {})
-            candidates_by_column = doc.get("candidates", {})
+            candidates_by_column = {}
+            candidate_records = cand_collection.find(
+                {"row_id": str(doc["row_id"]), "owner_id": doc["_id"]},
+                projection={"_id": 0, "candidates": 1, "col_id": 1},
+            )
+            for record in candidate_records:
+                col_id = record.get("col_id")
+                candidates = record.get("candidates", [])
+                if col_id not in candidates_by_column:
+                    candidates_by_column[col_id] = []
+                candidates_by_column[col_id].extend(candidates)
 
-            # Process each NE column
+            ne_cols = doc.get("classified_columns", {}).get("NE", {})
             for col_idx in ne_cols:
                 candidates = candidates_by_column.get(col_idx, [])
-
-                # Skip if no candidates
                 if not candidates:
                     continue
 
-                # Track types and predicates we've seen for this cell (to avoid double-counting)
                 seen_types = set()
                 seen_predicates = set()
-
-                # Consider top 3 candidates (as in FeaturesExtractionRevision)
                 for candidate in candidates[: self.top_n_cta_cpa_freq]:
                     # Process types (CTA)
                     for type_obj in candidate.get("types", []):

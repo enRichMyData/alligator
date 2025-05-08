@@ -168,6 +168,8 @@ class Alligator(DatabaseAccessMixin):
             )
 
         self.row_processor = RowBatchProcessor(
+            self.dataset_name,
+            self.table_name,
             self.feature,
             self.candidate_fetcher,
             self.object_fetcher,
@@ -295,7 +297,7 @@ class Alligator(DatabaseAccessMixin):
                 document = {
                     "dataset_name": dataset_name,
                     "table_name": table_name,
-                    "row_id": row_id,
+                    "row_id": str(row_id),
                     "data": row.tolist(),
                     "classified_columns": {
                         "NE": ne_cols,

@@ -47,6 +47,7 @@ class MLWorker(DatabaseAccessMixin):
         self._db_name = kwargs.pop("db_name", "alligator_db")
         self._mongo_uri = kwargs.pop("mongo_uri", "mongodb://gator-mongodb:27017/")
         self.input_collection = kwargs.get("input_collection", "input_data")
+        self.candidate_collection = kwargs.get("candidate_collection", "candidates")
         self.error_logs_collection = kwargs.get("error_collection", "error_logs")
         self.mongo_wrapper: MongoWrapper = MongoWrapper(
             self._mongo_uri,
@@ -110,34 +111,54 @@ class MLWorker(DatabaseAccessMixin):
     ) -> int:
         """Apply ML ranking using pre-computed global type and predicate frequencies"""
         db: Database = self.get_db()
+        cand_collection: Collection = db["candidates"]
         input_collection: Collection = db[self.input_collection]
 
-        # 1) Claim a batch of documents to process
         batch_docs = []
         for _ in range(self.batch_size):
             doc = input_collection.find_one_and_update(
                 self._get_query(),
                 {"$set": {f"{self.stage}_status": "DOING"}},
-                projection={"_id": 1, "row_id": 1, "candidates": 1},
+                projection={"_id": 1, "row_id": 1},
             )
             if doc is None:
                 break
-            batch_docs.append(doc)
 
+            doc["candidates"] = {}
+            batch_docs.append(doc)
         if not batch_docs:
             return 0
+
+        doc_ids = list({doc["_id"] for doc in batch_docs})
+        row_ids = list({str(doc["row_id"]) for doc in batch_docs})
+        doc_map = {(str(doc["row_id"]), doc["_id"]): doc for doc in batch_docs}
+
+        # Step 4: Fetch all candidates in a single query
+        candidates_cursor = cand_collection.find(
+            {"row_id": {"$in": row_ids}, "owner_id": {"$in": doc_ids}},
+            projection={"_id": 0, "candidates": 1, "col_id": 1, "row_id": 1, "owner_id": 1},
+        )
+        for record in candidates_cursor:
+            row_id = record.get("row_id")
+            owner_id = record.get("owner_id")
+            col_id = record.get("col_id")
+            candidates = record.get("candidates", [])
+            doc = doc_map.get((row_id, owner_id))
+            if doc:
+                if col_id not in doc["candidates"]:
+                    doc["candidates"][col_id] = []
+                doc["candidates"][col_id].extend(candidates)
 
         # 2) Assign global frequencies to each candidate, extract features, etc.
         all_candidates = []
         doc_info = []
         for doc in batch_docs:
-            row_id = doc["row_id"]
+            doc_id = doc["_id"]
+            row_id = str(doc.get("row_id", 0))
             candidates_by_column: Dict[Any, List[Dict[str, Any]]] = doc["candidates"]
-            for col_idx, candidates in candidates_by_column.items():
-                # Get frequencies for this column
-                cta_counter = type_frequencies.get(col_idx, Counter())
-                cpa_counter = predicate_frequencies.get(col_idx, Counter())
-
+            for col_id, candidates in candidates_by_column.items():
+                cta_counter = type_frequencies.get(col_id, Counter())
+                cpa_counter = predicate_frequencies.get(col_id, Counter())
                 for idx, cand in enumerate(candidates):
                     cand_feats = cand.setdefault("features", {})
 
@@ -146,8 +167,6 @@ class MLWorker(DatabaseAccessMixin):
                     type_freq_list = sorted(
                         [cta_counter.get(qid, 0.0) for qid in types_qids], reverse=True
                     )
-
-                    # Assign typeFreq1..typeFreq5
                     for i in range(1, 6):
                         cand_feats[f"cta_t{i}"] = (
                             type_freq_list[i - 1] if (i - 1) < len(type_freq_list) else 0.0
@@ -161,11 +180,7 @@ class MLWorker(DatabaseAccessMixin):
                             pred_scores[pred_id] = max(
                                 pred_scores.get(pred_id, 0), pred_freq * pred_value
                             )
-
-                    # Sort and take top 5
                     pred_freq_list = sorted(pred_scores.values(), reverse=True)
-
-                    # Assign predFreq1..predFreq5
                     for i in range(1, 6):
                         cand_feats[f"cpa_t{i}"] = (
                             pred_freq_list[i - 1] if (i - 1) < len(pred_freq_list) else 0.0
@@ -174,7 +189,7 @@ class MLWorker(DatabaseAccessMixin):
                     # Build feature vector for ML model
                     feat_vec = self.extract_features(cand)
                     all_candidates.append(feat_vec)
-                    doc_info.append((doc["_id"], row_id, col_idx, idx))
+                    doc_info.append((doc["_id"], row_id, col_id, idx))
 
         # 3) If no candidates, mark these docs as 'DONE'
         if not all_candidates:
@@ -191,40 +206,45 @@ class MLWorker(DatabaseAccessMixin):
         # 5) Assign scores and prepare updates
         docs_by_id = {doc["_id"]: doc for doc in batch_docs}
         score_map: Dict[Any, Dict[Any, Dict[int, float]]] = {}
-        for i, (doc_id, row_id, col_idx, cand_idx) in enumerate(doc_info):
-            score_map.setdefault(doc_id, {}).setdefault(col_idx, {})[cand_idx] = float(
-                ml_scores[i]
-            )
+        for i, (doc_id, row_id, col_id, cand_idx) in enumerate(doc_info):
+            score_map.setdefault(doc_id, {}).setdefault(col_id, {})[cand_idx] = float(ml_scores[i])
 
-        bulk_updates = []
+        cand_updates = []
+        input_updates = []
         for doc_id, doc in docs_by_id.items():
             el_results = {}
-            candidates_to_save = {}
             candidates_by_column = doc["candidates"]
-
-            for col_idx, cdict in score_map.get(doc_id, {}).items():
-                col_cands = candidates_by_column[col_idx]
-                # Update candidate scores
+            for col_id, cdict in score_map.get(doc_id, {}).items():
+                col_cands = candidates_by_column[col_id]
                 for c_idx, scr in cdict.items():
                     col_cands[c_idx]["score"] = scr
-
-                # Sort + slice top N
                 sorted_cands = sorted(col_cands, key=lambda x: x.get("score", 0.0), reverse=True)
-                if self.stage == "rerank" and self.max_candidates_in_result > 0:
-                    cands_to_save = sorted_cands[: self.max_candidates_in_result]
-                else:
-                    cands_to_save = sorted_cands
-                el_results[col_idx] = cands_to_save
-                candidates_to_save[col_idx] = sorted_cands
+                if self.stage == "rerank":
+                    if self.max_candidates_in_result > 0:
+                        cands_to_save = sorted_cands[: self.max_candidates_in_result]
+                    else:
+                        cands_to_save = sorted_cands
+                    el_results[col_id] = cands_to_save
+                cand_updates.append(
+                    UpdateOne(
+                        {"row_id": str(doc["row_id"]), "col_id": str(col_id), "owner_id": doc_id},
+                        {"$set": {"candidates": sorted_cands}},
+                    )
+                )
 
-            set_query = {f"{self.stage}_status": "DONE", "candidates": candidates_to_save}
+            set_query = {f"{self.stage}_status": "DONE"}
             if self.stage == "rerank":
                 set_query["el_results"] = el_results
-            bulk_updates.append(UpdateOne({"_id": doc_id}, {"$set": set_query}))
+            input_updates.append(UpdateOne({"_id": doc_id}, {"$set": set_query}))
 
         # 6) Bulk commit final results
-        if bulk_updates:
-            input_collection.bulk_write(bulk_updates)
+        if cand_updates:
+            for i in range(0, len(cand_updates), 1024):
+                db[self.candidate_collection].bulk_write(cand_updates[i : i + 1024], ordered=False)
+
+        if input_updates:
+            for i in range(0, len(input_updates), 1024):
+                db[self.input_collection].bulk_write(input_updates[i : i + 1024], ordered=False)
 
         return len(batch_docs)
 

@@ -175,6 +175,7 @@ class MongoWrapper(DatabaseAccessMixin):
     def create_indexes(self):
         db: Database = self.get_db()
         input_collection: Collection = db["input_data"]
+        candidate_collection: Collection = db["candidates"]
 
         input_collection.create_index([("dataset_name", ASCENDING), ("table_name", ASCENDING)])
         input_collection.create_index(
@@ -192,4 +193,15 @@ class MongoWrapper(DatabaseAccessMixin):
                 ("rank_status", ASCENDING),
                 ("rerank_status", ASCENDING),
             ]
+        )
+
+        candidate_collection.create_index([("owner_id", ASCENDING)])
+        candidate_collection.create_index([("row_id", ASCENDING), ("col_id", ASCENDING)])
+        candidate_collection.create_index(
+            [
+                ("row_id", ASCENDING),
+                ("col_id", ASCENDING),
+                ("owner_id", ASCENDING),
+            ],
+            unique=True,
         )

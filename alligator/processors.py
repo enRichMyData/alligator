@@ -22,6 +22,8 @@ class RowBatchProcessor(DatabaseAccessMixin):
 
     def __init__(
         self,
+        dataset_name: str,
+        table_name: str,
         feature: Feature,
         candidate_fetcher: CandidateFetcher,
         object_fetcher: ObjectFetcher | None = None,
@@ -30,6 +32,8 @@ class RowBatchProcessor(DatabaseAccessMixin):
         fuzzy_retry: bool = False,
         **kwargs,
     ):
+        self.dataset_name = dataset_name
+        self.table_name = table_name
         self.feature = feature
         self.candidate_fetcher = candidate_fetcher
         self.object_fetcher = object_fetcher
@@ -39,6 +43,7 @@ class RowBatchProcessor(DatabaseAccessMixin):
         self._db_name = kwargs.get("db_name", "alligator_db")
         self._mongo_uri = kwargs.get("mongo_uri", "mongodb://gator-mongodb:27017")
         self.input_collection = kwargs.get("input_collection", "input_data")
+        self.candidate_collection = kwargs.get("candidate_collection", "candidates")
         self.mongo_wrapper = MongoWrapper(self._mongo_uri, self._db_name)
 
     async def process_rows_batch(self, docs):
@@ -183,8 +188,9 @@ class RowBatchProcessor(DatabaseAccessMixin):
     async def _process_rows(
         self, row_data_list: List[RowData], candidates: Dict[str, List[Candidate]]
     ):
+        bulk_cand = []
+        bulk_input = []
         db = self.get_db()
-        bulk_updates = []
 
         """Process each row and update database."""
         for row_data in row_data_list:
@@ -215,16 +221,12 @@ class RowBatchProcessor(DatabaseAccessMixin):
             if self.object_fetcher and self.literal_fetcher:
                 await self._enhance_with_lamapi_features(row_data, entity_ids, candidates_by_col)
 
-            # Prepare update operation (instead of executing it)
-            bulk_updates.append(
+            # Update the status in the input collection
+            bulk_input.append(
                 UpdateOne(
                     {"_id": row_data.doc_id},
                     {
                         "$set": {
-                            "candidates": {
-                                str(col_id): [candidate.to_dict() for candidate in candidates]
-                                for col_id, candidates in candidates_by_col.items()
-                            },
                             "status": "DONE",
                             "rank_status": "TODO",
                             "rerank_status": "TODO",
@@ -233,13 +235,27 @@ class RowBatchProcessor(DatabaseAccessMixin):
                 )
             )
 
-        # Execute all updates in a single batch operation
-        if bulk_updates:
-            # MongoDB has a limit of 100,000 operations per bulk write
-            chunk_size = 1024
-            for i in range(0, len(bulk_updates), chunk_size):
-                chunk = bulk_updates[i : i + chunk_size]
-                db[self.input_collection].bulk_write(chunk, ordered=False)
+            # Store candidates in separate normalized documents
+            for col_id, col_candidates in candidates_by_col.items():
+                # Create one document per column
+                bulk_cand.append(
+                    UpdateOne(
+                        {
+                            "row_id": str(row_data.row_index),
+                            "col_id": str(col_id),
+                            "owner_id": row_data.doc_id,
+                        },
+                        {"$set": {"candidates": [c.to_dict() for c in col_candidates]}},
+                        upsert=True,
+                    )
+                )
+        if bulk_cand:
+            for i in range(0, len(bulk_cand), 1024):
+                db[self.candidate_collection].bulk_write(bulk_cand[i : i + 1024], ordered=False)
+
+        if bulk_input:
+            for i in range(0, len(bulk_input), 1024):
+                db[self.input_collection].bulk_write(bulk_input[i : i + 1024], ordered=False)
 
     def _compute_features(self, entity_value: str, row_value: str, candidates: List[Candidate]):
         """Process entities by computing features. Feature computation

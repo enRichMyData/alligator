@@ -222,7 +222,10 @@ class MLWorker(DatabaseAccessMixin):
                         cands_to_save = sorted_cands[: self.max_candidates_in_result]
                     else:
                         cands_to_save = sorted_cands
-                    el_results[col_id] = cands_to_save
+                    el_results[col_id] = [
+                        {k: v for k, v in cand.items() if k in {"score", "id", "name"}}
+                        for cand in cands_to_save
+                    ]
                 cand_updates.append(
                     UpdateOne(
                         {"row_id": str(doc["row_id"]), "col_id": str(col_id), "owner_id": doc_id},

@@ -314,6 +314,8 @@ class Alligator(DatabaseAccessMixin):
                         correct_qids[key] = self.correct_qids[key]
                         if isinstance(correct_qids[key], str):
                             correct_qids[key] = [correct_qids[key]]
+                        else:
+                            correct_qids[key] = list(set(correct_qids[key]))
                 document["correct_qids"] = correct_qids
                 documents.append(document)
 

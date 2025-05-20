@@ -174,71 +174,89 @@ class Feature(DatabaseAccessMixin):
         db = self.get_db()
         input_collection = db[self.input_collection]
 
-        # Get the count of documents
-        total_docs = input_collection.count_documents(
-            {
-                "dataset_name": self.dataset_name,
-                "table_name": self.table_name,
-                "status": "DONE",  # Only consider processed documents
-            }
-        )
-
-        # Calculate how many documents to process
-        if docs_to_process is None or docs_to_process >= 1.0:
-            docs_to_get = total_docs
-        else:
-            docs_to_get = max(1, int(total_docs * docs_to_process))
-
-        # Build the query
+        # Build the base query
         query = {
             "dataset_name": self.dataset_name,
             "table_name": self.table_name,
             "status": "DONE",
             "rank_status": "DONE",
         }
-        projection = {"classified_columns": 1, "row_id": 1, "_id": 1}
 
-        total_docs = input_collection.count_documents(query)
+        # Determine the number of documents to get
+        total_docs_matching_query = input_collection.count_documents(query)
+        if docs_to_process is None or docs_to_process >= 1.0:
+            docs_to_get = total_docs_matching_query
+        else:
+            docs_to_get = max(1, int(total_docs_matching_query * docs_to_process))
+
+        if docs_to_get == 0:
+            print("No documents match the criteria for computing global frequencies.")
+            return defaultdict(Counter), defaultdict(Counter)
+
+        # Base pipeline stages
+        pipeline: List[Dict[str, Any]] = [{"$match": query}]
+
         if random_sample:
-            # Use aggregation pipeline with $sample for random sampling
             print(
                 f"Computing type-frequency features by randomly sampling {docs_to_get} documents"
             )
-            pipeline = [
-                {"$match": query},
-                {"$sample": {"size": docs_to_get}},
-                {"$project": projection},
-            ]
-            cursor = input_collection.aggregate(pipeline)
+            pipeline.append({"$sample": {"size": docs_to_get}})
         else:
-            # Simple limit if specified
             print(f"Computing type-frequency features by processing first {docs_to_get} documents")
-            cursor = input_collection.find(query, projection)
-            cursor = cursor.limit(docs_to_get)
+            pipeline.append({"$limit": docs_to_get})
+
+        # Add $lookup to join with candidates
+        pipeline.extend(
+            [
+                {
+                    "$lookup": {
+                        "from": self.candidate_collection,
+                        "let": {"doc_id": "$_id", "row_id_str": {"$toString": "$row_id"}},
+                        "pipeline": [
+                            {
+                                "$match": {
+                                    "$expr": {
+                                        "$and": [
+                                            {"$eq": ["$owner_id", "$$doc_id"]},
+                                            {"$eq": ["$row_id", "$$row_id_str"]},
+                                        ]
+                                    }
+                                }
+                            },
+                            {"$project": {"_id": 0, "candidates": 1, "col_id": 1}},
+                        ],
+                        "as": "candidate_records_array",
+                    }
+                },
+                {
+                    "$addFields": {
+                        "candidates_by_column": {
+                            "$arrayToObject": {
+                                "$map": {
+                                    "input": "$candidate_records_array",
+                                    "as": "cand_rec",
+                                    "in": {"k": "$$cand_rec.col_id", "v": "$$cand_rec.candidates"},
+                                }
+                            }
+                        }
+                    }
+                },
+                {"$project": {"classified_columns": 1, "candidates_by_column": 1, "_id": 0}},
+            ]
+        )
+
+        cursor = input_collection.aggregate(pipeline)
 
         # Initialize counters
         type_frequencies = defaultdict(Counter)
         predicate_frequencies = defaultdict(Counter)
-
-        # Process each document
         n_docs = 0
-        cand_collection = db[self.candidate_collection]
+
         for doc in cursor:
             n_docs += 1
-
-            candidates_by_column = {}
-            candidate_records = cand_collection.find(
-                {"row_id": str(doc["row_id"]), "owner_id": doc["_id"]},
-                projection={"_id": 0, "candidates": 1, "col_id": 1},
-            )
-            for record in candidate_records:
-                col_id = record.get("col_id")
-                candidates = record.get("candidates", [])
-                if col_id not in candidates_by_column:
-                    candidates_by_column[col_id] = []
-                candidates_by_column[col_id].extend(candidates)
-
+            candidates_by_column = doc.get("candidates_by_column", {})
             ne_cols = doc.get("classified_columns", {}).get("NE", {})
+
             for col_idx in ne_cols:
                 candidates = candidates_by_column.get(col_idx, [])
                 if not candidates:
@@ -246,24 +264,29 @@ class Feature(DatabaseAccessMixin):
 
                 seen_types = set()
                 seen_predicates = set()
+
                 for candidate in candidates[: self.top_n_cta_cpa_freq]:
-                    # Process types (CTA)
                     for type_obj in candidate.get("types", []):
                         type_id = type_obj.get("id")
                         if type_id and type_id not in seen_types:
                             type_frequencies[col_idx][type_id] += 1
                             seen_types.add(type_id)
 
-                    # Process predicates (CPA)
                     predicates = candidate.get("predicates", {})
                     for rel_col_idx, rel_predicates in predicates.items():
                         for pred_id, pred_value in rel_predicates.items():
                             if pred_id and pred_id not in seen_predicates:
-                                # Update global predicate counter
                                 predicate_frequencies[col_idx][pred_id] += 1 * pred_value
                                 seen_predicates.add(pred_id)
 
-        # Normalize frequencies by document count
+        if n_docs == 0 and total_docs_matching_query > 0 and docs_to_get > 0:
+            print(
+                f"Warning: {docs_to_get} documents were selected for frequency computation, "
+                "but the aggregation pipeline (possibly $lookup) returned no combined documents. "
+                "Check if candidates exist for these documents or "
+                "if the $lookup conditions are too restrictive."
+            )
+
         if n_docs > 0:
             for col_idx in type_frequencies:
                 for type_id in type_frequencies[col_idx]:

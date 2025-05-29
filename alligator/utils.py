@@ -1,6 +1,7 @@
 import re
+from collections import Counter
 from functools import lru_cache
-from typing import List, Set
+from typing import Any, List, Set
 
 import nltk
 from dateutil.parser import parse
@@ -30,6 +31,13 @@ class ColumnHelper:
             return 0 <= idx < row_length
         except (ValueError, TypeError):
             return False
+
+
+def keys_with_max_count(counter: Counter) -> List[Any]:
+    if not counter:
+        return []
+    max_val = max(counter.values())
+    return [k for k, v in counter.items() if v == max_val]
 
 
 @lru_cache(maxsize=10000)

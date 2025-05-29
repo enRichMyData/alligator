@@ -494,7 +494,11 @@ class Alligator(DatabaseAccessMixin):
         self,
         rank: int,
         stage: str = "rank",
-        global_frequencies=Tuple[Dict[str, Counter] | None, Dict[str, Counter] | None],
+        global_frequencies=Tuple[
+            Dict[str, Counter] | None,
+            Dict[str, Counter] | None,
+            Dict[str, Dict[str, Counter]] | None,
+        ],
     ):
         """Unified wrapper function for ML workers"""
         worker = MLWorker(
@@ -593,13 +597,17 @@ class Alligator(DatabaseAccessMixin):
                 partial(
                     self.ml_worker,
                     stage="rank",
-                    global_frequencies=(None, None),  # Empty tuple for first stage
+                    global_frequencies=(None, None, None),  # Empty tuple for first stage
                 ),
                 range(self.num_ml_workers),
             )
 
             # Compute both type and predicate frequencies
-            type_frequencies, predicate_frequencies = self.feature.compute_global_frequencies(
+            (
+                type_frequencies,
+                predicate_frequencies,
+                predicate_pair_frequencies,
+            ) = self.feature.compute_global_frequencies(
                 docs_to_process=self.doc_percentage_type_features, random_sample=False
             )
 
@@ -608,7 +616,11 @@ class Alligator(DatabaseAccessMixin):
                 partial(
                     self.ml_worker,
                     stage="rerank",
-                    global_frequencies=(type_frequencies, predicate_frequencies),
+                    global_frequencies=(
+                        type_frequencies,
+                        predicate_frequencies,
+                        predicate_pair_frequencies,
+                    ),
                 ),
                 range(self.num_ml_workers),
             )

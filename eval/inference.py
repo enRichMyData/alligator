@@ -44,7 +44,7 @@ async def main(args: argparse.Namespace):
         # Identify ne-columns from ground truth
         tab_id = os.path.split(table_path)[-1].split(".")[0]
         unique_cols = gt[gt["tab_id"] == tab_id]["col_id"].unique()
-        columns_type = {
+        target_columns = {
             "NE": {str(col_id): "" for col_id in unique_cols},
             "LIT": {
                 str(col_id): ""
@@ -67,7 +67,7 @@ async def main(args: argparse.Namespace):
 
         tic = time.perf_counter()
         args.gator.input_csv = table_path
-        args.gator.columns_type = columns_type
+        args.gator.target_columns = target_columns
         args.gator.dataset_name = args.dataset_name
         args.gator.table_name = tab_id
         args.gator.correct_qids = correct_qids

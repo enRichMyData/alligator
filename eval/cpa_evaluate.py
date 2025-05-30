@@ -55,7 +55,7 @@ def main(args: argparse.Namespace):
             "aicrowd_participant_id": "dummy_participant",
         }
     )
-    print(f"CEA evaluation result: {result}")
+    print(f"CPA evaluation result: {result}")
 
 
 if __name__ == "__main__":

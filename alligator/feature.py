@@ -333,6 +333,8 @@ class Feature(DatabaseAccessMixin):
 
                 # Process each subject candidate
                 object_rel_score_buffer = {}
+                obj_candidate_ids = {oc.id for oc in obj_candidates if oc.id}
+
                 for subj_candidate in subj_candidates:
                     subj_id = subj_candidate.id
                     if not subj_id or subj_id not in objects_data:
@@ -340,18 +342,19 @@ class Feature(DatabaseAccessMixin):
 
                     # Get the objects related to this subject
                     subj_objects = objects_data[subj_id].get("objects", {})
-                    objects_set = set(subj_objects.keys())
+                    if not subj_objects:
+                        continue
+                    subj_objects_set = set(subj_objects.keys())
 
                     # Get object candidates' IDs in this column
-                    obj_candidate_ids = {oc.id for oc in obj_candidates if oc.id}
-                    objects_intersection = objects_set.intersection(obj_candidate_ids)
+                    objects_intersection = subj_objects_set.intersection(obj_candidate_ids)
 
                     # Skip if no intersection
                     if not objects_intersection:
                         continue
 
                     # Calculate maximum object score for this subject
-                    obj_score_max = 0
+                    obj_score_max = 0.0
 
                     for obj_candidate in obj_candidates:
                         obj_id = obj_candidate.id

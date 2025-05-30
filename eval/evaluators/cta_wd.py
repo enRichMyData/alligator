@@ -5,7 +5,7 @@ import pandas as pd
 
 
 class CTA_Evaluator:
-    def __init__(self, answer_file_path, round=1):
+    def __init__(self, answer_file_path, round=1, ancestor_path=None, descendent_path=None):
         """
         `round` : Holds the round for which the evaluation is being done.
         can be 1, 2...upto the number of rounds the challenge has.
@@ -13,6 +13,8 @@ class CTA_Evaluator:
         """
         self.answer_file_path = answer_file_path
         self.round = round
+        self.ancestor_path = ancestor_path
+        self.descendent_path = descendent_path
 
     def _evaluate(self, client_payload, _context={}):
         """
@@ -23,8 +25,8 @@ class CTA_Evaluator:
         """
         submission_file_path = client_payload["submission_file_path"]
 
-        gt_ancestor = json.load(open("./DataSets/HardTablesR1/Valid/gt/cta_gt_ancestor.json"))
-        gt_descendent = json.load(open("./DataSets/HardTablesR1/Valid/gt/cta_gt_descendent.json"))
+        gt_ancestor = json.load(open(self.ancestor_path))
+        gt_descendent = json.load(open(self.descendent_path))
 
         cols, col_type = set(), dict()
         gt = pd.read_csv(

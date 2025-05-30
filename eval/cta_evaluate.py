@@ -3,7 +3,7 @@ import os
 
 import pandas as pd
 from dotenv import load_dotenv
-from evaluators.cea_wd import CEA_Evaluator
+from evaluators.cta_wd import CTA_Evaluator
 
 from alligator import PROJECT_ROOT
 from alligator.database import DatabaseManager
@@ -18,41 +18,45 @@ def main(args: argparse.Namespace):
     cursor = mongo.find_documents(
         collection=db.get_collection("input_data"),
         query={"dataset_name": args.dataset_name, "status": "DONE", "rerank_status": "DONE"},
-        projection={"el_results": 1, "table_name": 1, "dataset_name": 1, "row_id": 1},
+        projection={"cta": 1, "table_name": 1, "dataset_name": 1},
     )
-    results = []
+    cta_results = []
+    seen_tables = set()
     for doc in cursor:
         table_name = doc["table_name"]
-        row_id = doc["row_id"]
-        if "el_results" not in doc:
-            print(f"Skipping document {doc['_id']} due to missing 'el_results'.")
+        if "cta" not in doc:
+            print(f"Skipping document {doc['_id']} due to missing 'cta'.")
             continue
-        for col_id in doc["el_results"]:
-            winning_entity = doc["el_results"][col_id][0]["id"]
-            results.append(
+        for col_id in doc["cta"]:
+            if (table_name, col_id) in seen_tables:
+                continue
+            seen_tables.add((table_name, col_id))
+            winning_entity = doc["cta"][col_id][0]
+            cta_results.append(
                 {
                     "tab_id": table_name,
-                    "row_id": row_id,
                     "col_id": col_id,
                     "entity": winning_entity,
                 }
             )
-    df = pd.DataFrame(results)
-    if df["row_id"].astype(int).min() == 0:
-        df["row_id"] = (df["row_id"].astype(int) + 1).astype(str)
+    cta_df = pd.DataFrame(cta_results)
     os.makedirs("./results", exist_ok=True)
-    df.to_csv(f"./results/{args.dataset_name}_results.csv", index=False)
+    cta_df.to_csv(f"./results/{args.dataset_name}_cta_results.csv", index=False)
 
-    # Evaluate
-    evaluator = CEA_Evaluator(args.ground_truth)
+    # CTA evaluate
+    evaluator = CTA_Evaluator(
+        args.ground_truth,
+        ancestor_path=args.ancestor_path,
+        descendent_path=args.descendent_path,
+    )
     result = evaluator._evaluate(
         {
-            "submission_file_path": f"./results/{args.dataset_name}_results.csv",
+            "submission_file_path": f"./results/{args.dataset_name}_cta_results.csv",
             "aicrowd_submission_id": "dummy_id",
             "aicrowd_participant_id": "dummy_participant",
         }
     )
-    print(f"Evaluation result: {result}")
+    print(f"CTA evaluation result: {result}")
 
 
 if __name__ == "__main__":
@@ -62,7 +66,21 @@ if __name__ == "__main__":
         "--ground_truth",
         type=str,
         default=os.path.join(
-            PROJECT_ROOT, "eval", "tables", "HardTablesR1", "Valid", "gt", "cea_gt.csv"
+            PROJECT_ROOT, "eval", "tables", "HardTablesR1", "Valid", "gt", "cta_gt.csv"
+        ),
+    )
+    parser.add_argument(
+        "--ancestor_path",
+        type=str,
+        default=os.path.join(
+            PROJECT_ROOT, "eval", "tables", "HardTablesR1", "Valid", "gt", "cta_gt_ancestor.json"
+        ),
+    )
+    parser.add_argument(
+        "--descendent_path",
+        type=str,
+        default=os.path.join(
+            PROJECT_ROOT, "eval", "tables", "HardTablesR1", "Valid", "gt", "cta_gt_descendent.json"
         ),
     )
     parser.add_argument(

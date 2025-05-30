@@ -95,7 +95,10 @@ async def main(args: argparse.Namespace):
             print(f"Table {tab_id} not found in the database. Proceeding with processing.")
 
         gator = Alligator(**args.gator)
-        await gator.run()
+        try:
+            await gator.run()
+        finally:
+            await gator.close()
         toc = time.perf_counter()
         print(f"Processing completed in {toc - tic:0.4f} seconds.")
         perf[table_path] = {"elapsed_time": toc - tic, "nrows": len(table)}

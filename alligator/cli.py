@@ -24,7 +24,10 @@ async def main():
     print("🚀 Starting the entity linking process...")
     tic = time.perf_counter()
     gator = Alligator(**args.gator)
-    await gator.run()
+    try:
+        await gator.run()
+    finally:
+        await gator.close()
     toc = time.perf_counter()
     print(f"✅ Entity linking process completed in {toc - tic:0.4f} seconds.")
 

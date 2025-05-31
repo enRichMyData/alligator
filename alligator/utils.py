@@ -1,12 +1,14 @@
 import re
 from functools import lru_cache
-from typing import List, Set
+from typing import Any, List, Set
 
 import nltk
 from dateutil.parser import parse
 from nltk.tokenize import word_tokenize
 
 from alligator import STOP_WORDS
+
+RE_NUM_BRACKETS = re.compile(r"\[\d+\w*\]")
 
 
 class ColumnHelper:
@@ -32,6 +34,13 @@ class ColumnHelper:
             return False
 
 
+def keys_with_max_count(counter: dict) -> List[Any]:
+    if not counter:
+        return []
+    max_val = max(counter.values())
+    return [k for k, v in counter.items() if v == max_val]
+
+
 @lru_cache(maxsize=10000)
 def ngrams(string: str, n: int = 3) -> List[str]:
     tokens: List[str] = [string[i : i + n] for i in range(len(string) - n + 1)]
@@ -44,12 +53,13 @@ def tokenize_text(text: str) -> Set[str]:
     return {t for t in tokens if t not in STOP_WORDS}
 
 
+@lru_cache(maxsize=10000)
 def clean_str(value):
     original_value = str(value).lower()
     value = original_value
 
     # Remove purely numerical content within brackets
-    value = re.sub(r"\[\d+\w*\]", "", value)
+    value = RE_NUM_BRACKETS.sub("", value)
 
     # Remove specific unwanted characters
     stop_characters = ["_"]
@@ -123,6 +133,7 @@ def get_ngrams(text, n=3):
     return set(ngrams)
 
 
+@lru_cache(maxsize=10000)
 def compute_similarity_between_string(str1: str, str2: str, ngram: int | None = None) -> float:
     ngrams_str1 = get_ngrams(str1, ngram)
     ngrams_str2 = get_ngrams(str2, ngram)
@@ -130,6 +141,7 @@ def compute_similarity_between_string(str1: str, str2: str, ngram: int | None = 
     return score
 
 
+@lru_cache(maxsize=10000)
 def compute_similarity_between_string_token_based(str1: str, str2: str) -> float:
     token_set_str1 = set(str1.split(" "))
     token_set_str2 = set(str2.split(" "))
@@ -139,6 +151,7 @@ def compute_similarity_between_string_token_based(str1: str, str2: str) -> float
     return score
 
 
+@lru_cache(maxsize=10000)
 def edit_distance(s1, s2):
     """
     Normalized Levhenstein distance function between two strings
@@ -151,6 +164,7 @@ def _my_abs(value1, value2):
     return diff
 
 
+@lru_cache(maxsize=10000)
 def compute_similarty_between_numbers(value1: str, value2: str) -> float:
     try:
         value1 = float(value1)
@@ -162,6 +176,7 @@ def compute_similarty_between_numbers(value1: str, value2: str) -> float:
     return score
 
 
+@lru_cache(maxsize=10000)
 def compute_similarity_between_dates(date1: str, date2: str) -> float:
     try:
         date_parsed1 = parse_date(date1)

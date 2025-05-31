@@ -159,7 +159,7 @@ class Feature(DatabaseAccessMixin):
 
     def compute_global_frequencies(
         self, docs_to_process: float = 1.0, random_sample: bool = False
-    ) -> Tuple[Dict[Any, Counter], Dict[Any, Counter]]:
+    ) -> Tuple[Dict[Any, Counter], Dict[Any, Counter], Dict[Any, Dict[Any, Counter]]]:
         """
         Compute global type frequencies (CTA) and predicate frequencies (CPA) across all columns.
 
@@ -248,9 +248,10 @@ class Feature(DatabaseAccessMixin):
         cursor = input_collection.aggregate(pipeline)
 
         # Initialize counters
+        n_docs = 0
+        predicate_pair_frequencies = {}
         type_frequencies = defaultdict(Counter)
         predicate_frequencies = defaultdict(Counter)
-        n_docs = 0
 
         for doc in cursor:
             n_docs += 1
@@ -261,6 +262,9 @@ class Feature(DatabaseAccessMixin):
                 candidates = candidates_by_column.get(col_idx, [])
                 if not candidates:
                     continue
+
+                if col_idx not in predicate_pair_frequencies:
+                    predicate_pair_frequencies[col_idx] = {}
 
                 seen_types = set()
                 seen_predicates = set()
@@ -274,9 +278,14 @@ class Feature(DatabaseAccessMixin):
 
                     predicates = candidate.get("predicates", {})
                     for rel_col_idx, rel_predicates in predicates.items():
+                        if rel_col_idx not in predicate_pair_frequencies[col_idx]:
+                            predicate_pair_frequencies[col_idx][rel_col_idx] = Counter()
                         for pred_id, pred_value in rel_predicates.items():
                             if pred_id and pred_id not in seen_predicates:
-                                predicate_frequencies[col_idx][pred_id] += 1 * pred_value
+                                predicate_frequencies[col_idx][pred_id] += pred_value
+                                predicate_pair_frequencies[col_idx][rel_col_idx][
+                                    pred_id
+                                ] += pred_value
                                 seen_predicates.add(pred_id)
 
         if n_docs == 0 and total_docs_matching_query > 0 and docs_to_get > 0:
@@ -300,7 +309,7 @@ class Feature(DatabaseAccessMixin):
                         predicate_frequencies[col_idx][pred_id] / n_docs
                     )
 
-        return type_frequencies, predicate_frequencies
+        return type_frequencies, predicate_frequencies, predicate_pair_frequencies
 
     def compute_entity_entity_relationships(
         self,
@@ -324,6 +333,8 @@ class Feature(DatabaseAccessMixin):
 
                 # Process each subject candidate
                 object_rel_score_buffer = {}
+                obj_candidate_ids = {oc.id for oc in obj_candidates if oc.id}
+
                 for subj_candidate in subj_candidates:
                     subj_id = subj_candidate.id
                     if not subj_id or subj_id not in objects_data:
@@ -331,18 +342,19 @@ class Feature(DatabaseAccessMixin):
 
                     # Get the objects related to this subject
                     subj_objects = objects_data[subj_id].get("objects", {})
-                    objects_set = set(subj_objects.keys())
+                    if not subj_objects:
+                        continue
+                    subj_objects_set = set(subj_objects.keys())
 
                     # Get object candidates' IDs in this column
-                    obj_candidate_ids = {oc.id for oc in obj_candidates if oc.id}
-                    objects_intersection = objects_set.intersection(obj_candidate_ids)
+                    objects_intersection = subj_objects_set.intersection(obj_candidate_ids)
 
                     # Skip if no intersection
                     if not objects_intersection:
                         continue
 
                     # Calculate maximum object score for this subject
-                    obj_score_max = 0
+                    obj_score_max = 0.0
 
                     for obj_candidate in obj_candidates:
                         obj_id = obj_candidate.id

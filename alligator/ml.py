@@ -11,6 +11,7 @@ from alligator import PROJECT_ROOT
 from alligator.database import DatabaseAccessMixin
 from alligator.feature import DEFAULT_FEATURES
 from alligator.mongo import MongoWrapper
+from alligator.utils import keys_with_max_count
 
 if TYPE_CHECKING:
     from tensorflow.keras.models import Model
@@ -62,10 +63,11 @@ class MLWorker(DatabaseAccessMixin):
 
     def run(
         self,
-        global_frequencies: Tuple[Dict[Any, Counter] | None, Dict[Any, Counter] | None] = (
-            None,
-            None,
-        ),
+        global_frequencies: Tuple[
+            Dict[Any, Counter] | None,
+            Dict[Any, Counter] | None,
+            Dict[Any, Dict[Any, Counter] | None],
+        ] = (None, None, None),
     ) -> None:
         """Process candidates directly from input_collection"""
         db: Database = self.get_db()
@@ -73,11 +75,13 @@ class MLWorker(DatabaseAccessMixin):
         input_collection: Collection = db[self.input_collection]
 
         # Unpack type and predicate frequencies
-        type_frequencies, predicate_frequencies = global_frequencies
+        type_frequencies, predicate_frequencies, predicate_pair_frequencies = global_frequencies
         if type_frequencies is None:
             type_frequencies = {}
         if predicate_frequencies is None:
             predicate_frequencies = {}
+        if predicate_pair_frequencies is None:
+            predicate_pair_frequencies = {}
 
         # Now proceed with processing documents in batches
         total_docs = self.mongo_wrapper.count_documents(input_collection, self._get_query())
@@ -90,7 +94,9 @@ class MLWorker(DatabaseAccessMixin):
             )
 
             # Process a batch using the pre-computed global frequencies
-            docs_processed = self.apply_ml_ranking(model, type_frequencies, predicate_frequencies)
+            docs_processed = self.apply_ml_ranking(
+                model, type_frequencies, predicate_frequencies, predicate_pair_frequencies
+            )
             processed_count += docs_processed
 
             # If no documents processed, check if there are any left
@@ -108,6 +114,7 @@ class MLWorker(DatabaseAccessMixin):
         model: "Model",
         type_frequencies: Dict[Any, Counter] = {},
         predicate_frequencies: Dict[Any, Counter] = {},
+        predicate_pair_frequencies: Dict[Any, Dict[Any, Counter]] = {},
     ) -> int:
         """Apply ML ranking using pre-computed global type and predicate frequencies"""
         db: Database = self.get_db()
@@ -210,7 +217,10 @@ class MLWorker(DatabaseAccessMixin):
         cand_updates = []
         input_updates = []
         for doc_id, doc in docs_by_id.items():
-            el_results = {}
+            cea_results = {}
+            cta_results = {}
+            cpa_results = {}
+
             candidates_by_column = doc["candidates"]
             for col_id, cdict in score_map.get(doc_id, {}).items():
                 col_cands = candidates_by_column[col_id]
@@ -222,10 +232,26 @@ class MLWorker(DatabaseAccessMixin):
                         cands_to_save = sorted_cands[: self.max_candidates_in_result]
                     else:
                         cands_to_save = sorted_cands
-                    el_results[col_id] = [
-                        {k: v for k, v in cand.items() if k in {"score", "id", "name"}}
+                    cea_results[col_id] = [
+                        {
+                            k: v
+                            for k, v in cand.items()
+                            if k in {"score", "id", "name", "description", "types"}
+                        }
                         for cand in cands_to_save
                     ]
+                    cta_results[col_id] = keys_with_max_count(
+                        type_frequencies.get(col_id, Counter())
+                    )
+                    cpa_results[col_id] = {}
+                    for col_id_rel, pred_freq in predicate_pair_frequencies.get(
+                        col_id, {}
+                    ).items():
+                        keys = keys_with_max_count(pred_freq)
+                        if len(keys) == 0:
+                            continue
+                        cpa_results[col_id][col_id_rel] = keys
+
                 cand_updates.append(
                     UpdateOne(
                         {"row_id": str(doc["row_id"]), "col_id": str(col_id), "owner_id": doc_id},
@@ -235,17 +261,24 @@ class MLWorker(DatabaseAccessMixin):
 
             set_query = {f"{self.stage}_status": "DONE"}
             if self.stage == "rerank":
-                set_query["el_results"] = el_results
+                set_query["cea"] = cea_results
+                set_query["cta"] = cta_results
+                set_query["cpa"] = cpa_results
             input_updates.append(UpdateOne({"_id": doc_id}, {"$set": set_query}))
 
         # 6) Bulk commit final results
+        bulk_size = 8192
         if cand_updates:
-            for i in range(0, len(cand_updates), 1024):
-                db[self.candidate_collection].bulk_write(cand_updates[i : i + 1024], ordered=False)
+            for i in range(0, len(cand_updates), bulk_size):
+                db[self.candidate_collection].bulk_write(
+                    cand_updates[i : i + bulk_size], ordered=False
+                )
 
         if input_updates:
-            for i in range(0, len(input_updates), 1024):
-                db[self.input_collection].bulk_write(input_updates[i : i + 1024], ordered=False)
+            for i in range(0, len(input_updates), bulk_size):
+                db[self.input_collection].bulk_write(
+                    input_updates[i : i + bulk_size], ordered=False
+                )
 
         return len(batch_docs)
 

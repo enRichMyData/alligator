@@ -356,7 +356,7 @@ def get_table(
     rows_formatted = []
     for row in raw_rows:
         linked_entities = []
-        el_results = row.get("el_results", {})
+        el_results = row.get("cea", {})
 
         # For each column, gather all candidates
         for col_index in range(len(header)):

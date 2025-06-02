@@ -3,7 +3,7 @@ import os
 
 import pandas as pd
 from dotenv import load_dotenv
-from evaluators.cea_wd import CEA_Evaluator
+from evaluators.cpa_wd import CPA_Evaluator
 
 from alligator import PROJECT_ROOT
 from alligator.database import DatabaseManager
@@ -18,41 +18,44 @@ def main(args: argparse.Namespace):
     cursor = mongo.find_documents(
         collection=db.get_collection("input_data"),
         query={"dataset_name": args.dataset_name, "status": "DONE", "rerank_status": "DONE"},
-        projection={"el_results": 1, "table_name": 1, "dataset_name": 1, "row_id": 1},
+        projection={"cpa": 1, "table_name": 1, "dataset_name": 1, "row_id": 1},
     )
-    results = []
+    cpa_results = []
+    seen_tables = set()
     for doc in cursor:
         table_name = doc["table_name"]
-        row_id = doc["row_id"]
-        if "el_results" not in doc:
-            print(f"Skipping document {doc['_id']} due to missing 'el_results'.")
+        doc["row_id"]
+        if "cpa" not in doc:
+            print(f"Skipping document {doc['_id']} due to missing 'cpa'.")
             continue
-        for col_id in doc["el_results"]:
-            winning_entity = doc["el_results"][col_id][0]["id"]
-            results.append(
-                {
-                    "tab_id": table_name,
-                    "row_id": row_id,
-                    "col_id": col_id,
-                    "entity": winning_entity,
-                }
-            )
-    df = pd.DataFrame(results)
-    if df["row_id"].astype(int).min() == 0:
-        df["row_id"] = (df["row_id"].astype(int) + 1).astype(str)
+        for subj_col_id in doc["cpa"]:
+            for obj_col_id in doc["cpa"][subj_col_id]:
+                if (table_name, subj_col_id, obj_col_id) in seen_tables:
+                    continue
+                seen_tables.add((table_name, subj_col_id, obj_col_id))
+                winning_entity = doc["cpa"][subj_col_id][obj_col_id][0]
+                cpa_results.append(
+                    {
+                        "tab_id": table_name,
+                        "sub_col_id": subj_col_id,
+                        "obj_col_id": obj_col_id,
+                        "property": winning_entity,
+                    }
+                )
+    cpa_df = pd.DataFrame(cpa_results)
     os.makedirs("./results", exist_ok=True)
-    df.to_csv(f"./results/{args.dataset_name}_results.csv", index=False)
+    cpa_df.to_csv(f"./results/{args.dataset_name}_cpa_results.csv", index=False)
 
-    # Evaluate
-    evaluator = CEA_Evaluator(args.ground_truth)
+    # CEA evaluate
+    evaluator = CPA_Evaluator(args.ground_truth)
     result = evaluator._evaluate(
         {
-            "submission_file_path": f"./results/{args.dataset_name}_results.csv",
+            "submission_file_path": f"./results/{args.dataset_name}_cpa_results.csv",
             "aicrowd_submission_id": "dummy_id",
             "aicrowd_participant_id": "dummy_participant",
         }
     )
-    print(f"Evaluation result: {result}")
+    print(f"CPA evaluation result: {result}")
 
 
 if __name__ == "__main__":
@@ -62,7 +65,7 @@ if __name__ == "__main__":
         "--ground_truth",
         type=str,
         default=os.path.join(
-            PROJECT_ROOT, "eval", "tables", "HardTablesR1", "Valid", "gt", "cea_gt.csv"
+            PROJECT_ROOT, "eval", "tables", "HardTablesR1", "Valid", "gt", "cpa_gt.csv"
         ),
     )
     parser.add_argument(

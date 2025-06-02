@@ -249,13 +249,18 @@ class RowBatchProcessor(DatabaseAccessMixin):
                         upsert=True,
                     )
                 )
+        bulk_batch_size = 8192
         if bulk_cand:
-            for i in range(0, len(bulk_cand), 1024):
-                db[self.candidate_collection].bulk_write(bulk_cand[i : i + 1024], ordered=False)
+            for i in range(0, len(bulk_cand), bulk_batch_size):
+                db[self.candidate_collection].bulk_write(
+                    bulk_cand[i : i + bulk_batch_size], ordered=False
+                )
 
         if bulk_input:
-            for i in range(0, len(bulk_input), 1024):
-                db[self.input_collection].bulk_write(bulk_input[i : i + 1024], ordered=False)
+            for i in range(0, len(bulk_input), bulk_batch_size):
+                db[self.input_collection].bulk_write(
+                    bulk_input[i : i + bulk_batch_size], ordered=False
+                )
 
     def _compute_features(self, entity_value: str, row_value: str, candidates: List[Candidate]):
         """Process entities by computing features. Feature computation

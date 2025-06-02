@@ -152,21 +152,18 @@ class Alligator(DatabaseAccessMixin):
         # Onboard data
         self.onboard_data(self.dataset_name, self.table_name, columns_type=self.columns_type)
 
-    async def _get_or_create_shared_http_session(self) -> aiohttp.ClientSession:
-        if self._shared_http_session is None or self._shared_http_session.closed:
-            connector = aiohttp.TCPConnector(
-                limit=self._http_session_limit, ssl=self._http_session_ssl_verify
-            )
-            self._shared_http_session = aiohttp.ClientSession(connector=connector, timeout=TIMEOUT)
-            print(
-                f"Created shared HTTP session with limit {self._http_session_limit} "
-                f"and SSL verify {self._http_session_ssl_verify}."
-            )
-        return self._shared_http_session
-
     async def _initialize_async_components(self):
-        """Initializes components that require an active event loop or async operations."""
-        session = await self._get_or_create_shared_http_session()
+        """Initializes components that require an active event loop or async operations.
+        Each process must create its own HTTP session!
+        """
+        connector = aiohttp.TCPConnector(
+            limit=self._http_session_limit, ssl=self._http_session_ssl_verify
+        )
+        session = aiohttp.ClientSession(connector=connector, timeout=TIMEOUT)
+        print(
+            f"Created HTTP session with limit {self._http_session_limit} "
+            f"and SSL verify {self._http_session_ssl_verify}."
+        )
 
         self.candidate_fetcher = CandidateFetcher(
             self.entity_retrieval_endpoint,
@@ -212,6 +209,17 @@ class Alligator(DatabaseAccessMixin):
             mongo_uri=self._mongo_uri,
             input_collection=self._INPUT_COLLECTION,
         )
+        self._shared_http_session = session  # For cleanup in this process
+
+    async def close(self):
+        """Closes resources like the HTTP session."""
+        if (
+            hasattr(self, "_shared_http_session")
+            and self._shared_http_session
+            and not self._shared_http_session.closed
+        ):
+            await self._shared_http_session.close()
+            print("HTTP session closed.")
 
     def close_mongo_connection(self):
         """Cleanup when instance is destroyed"""
@@ -571,59 +579,92 @@ class Alligator(DatabaseAccessMixin):
             await self.row_processor.process_rows_batch(table_docs)
 
     async def worker_async(self, rank: int):
+        await self._initialize_async_components()
         db = self.get_db()
         input_collection = db[self._INPUT_COLLECTION]
 
-        # Count total documents to process
-        total_docs = input_collection.count_documents(
-            {
-                "dataset_name": self.dataset_name,
-                "table_name": self.table_name,
-            }
-        )
+        print(f"Worker {rank} started.")
+        while True:
+            docs = []
+            for _ in range(self.worker_batch_size):
+                doc = input_collection.find_one_and_update(
+                    {
+                        "dataset_name": self.dataset_name,
+                        "table_name": self.table_name,
+                        "status": "TODO",
+                    },
+                    {"$set": {"status": "DOING"}},
+                    return_document=True,
+                )
+                if doc:
+                    docs.append(doc)
+                else:
+                    break
+            if not docs:
+                break
 
-        docs_per_worker = total_docs // self.num_workers
-        remainder = total_docs % self.num_workers
+            await self.process_batch(docs)
+            print(f"Worker {rank} processed {len(docs)} documents.")
 
-        # Adjust batch size for this specific worker
-        # Give extra documents to earlier workers if not evenly divisible
-        if rank < remainder:
-            batch_size = docs_per_worker + 1
-            skip = rank * (docs_per_worker + 1)
-        else:
-            batch_size = docs_per_worker
-            skip = (remainder * (docs_per_worker + 1)) + ((rank - remainder) * docs_per_worker)
-        print(f"Worker {rank} started with batch size {batch_size}, skipping {skip}.")
+        await self.close()
 
-        # Find documents to process for this worker using skip/limit
-        cursor = (
-            input_collection.find(
-                {
-                    "dataset_name": self.dataset_name,
-                    "table_name": self.table_name,
-                }
-            )
-            .skip(skip)
-            .limit(batch_size)
-        )
+    # async def worker_async(self, rank: int):
+    #     await self._initialize_async_components()
 
-        todo_docs = []
-        for doc in cursor:
-            input_collection.update_one({"_id": doc["_id"]}, {"$set": {"status": "DOING"}})
-            if len(todo_docs) < self.worker_batch_size:
-                todo_docs.append(doc)
-            else:
-                await self.process_batch(todo_docs)
-                print(f"Worker {rank} processed {len(todo_docs)} documents.")
-                todo_docs = [doc]
-        if todo_docs:
-            await self.process_batch(todo_docs)
+    #     db = self.get_db()
+    #     input_collection = db[self._INPUT_COLLECTION]
+
+    #     total_docs = input_collection.count_documents(
+    #         {
+    #             "dataset_name": self.dataset_name,
+    #             "table_name": self.table_name,
+    #         }
+    #     )
+
+    #     docs_per_worker = total_docs // self.num_workers
+    #     remainder = total_docs % self.num_workers
+
+    #     # Adjust batch size for this specific worker
+    #     # Give extra documents to earlier workers if not evenly divisible
+    #     if rank < remainder:
+    #         batch_size = docs_per_worker + 1
+    #         skip = rank * (docs_per_worker + 1)
+    #     else:
+    #         batch_size = docs_per_worker
+    #         skip = (remainder * (docs_per_worker + 1)) + ((rank - remainder) * docs_per_worker)
+    #     print(f"Worker {rank} started with batch size {batch_size}, skipping {skip}.")
+
+    #     # Find documents to process for this worker using skip/limit
+    #     cursor = (
+    #         input_collection.find(
+    #             {
+    #                 "dataset_name": self.dataset_name,
+    #                 "table_name": self.table_name,
+    #             }
+    #         )
+    #         .skip(skip)
+    #         .limit(batch_size)
+    #     )
+
+    #     todo_docs = []
+    #     for doc in cursor:
+    #         input_collection.update_one({"_id": doc["_id"]}, {"$set": {"status": "DOING"}})
+    #         if len(todo_docs) < self.worker_batch_size:
+    #             todo_docs.append(doc)
+    #         else:
+    #             await self.process_batch(todo_docs)
+    #             print(f"Worker {rank} processed {len(todo_docs)} documents.")
+    #             todo_docs = [doc]
+    #     if todo_docs:
+    #         await self.process_batch(todo_docs)
+
+    #     await self.close()
 
     def worker(self, rank: int):
         asyncio.run(self.worker_async(rank))
 
-    async def run(self):
-        await self._initialize_async_components()
+    def run(self):
+        # await self._initialize_async_components()
 
         db = self.get_db()
         input_collection = db[self._INPUT_COLLECTION]
@@ -631,8 +672,16 @@ class Alligator(DatabaseAccessMixin):
         total_rows = self.mongo_wrapper.count_documents(input_collection, {"status": "TODO"})
         print(f"Found {total_rows} tasks to process.")
 
-        tasks = [self.worker_async(rank) for rank in range(self.num_workers)]
-        await asyncio.gather(*tasks)
+        # tasks = [self.worker_async(rank) for rank in range(self.num_workers)]
+        # await asyncio.gather(*tasks)
+        # Use multiprocessing for true parallelism
+        processes = []
+        for rank in range(self.num_workers):
+            p = mp.Process(target=self.worker, args=(rank,))
+            p.start()
+            processes.append(p)
+        for p in processes:
+            p.join()
 
         pool = mp.Pool(processes=self.num_workers)
         try:
@@ -695,13 +744,3 @@ class Alligator(DatabaseAccessMixin):
         else:
             extracted_rows = []
         return extracted_rows
-
-    async def close(self):  # New method for cleanup
-        """Closes shared resources like the HTTP session and database connections."""
-        if self._shared_http_session and not self._shared_http_session.closed:
-            await self._shared_http_session.close()
-            print("Shared HTTP session closed.")
-        # DatabaseManager handles its own connections, ensure it's called at application exit
-        # For explicitness, you can call it here too, or rely on a higher-level shutdown hook.
-        # DatabaseManager.close_all_connections()
-        # print("MongoDB connections scheduled for closing via DatabaseManager.")

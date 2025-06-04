@@ -39,7 +39,8 @@ class Alligator(DatabaseAccessMixin):
         output_csv: str | Path | None = None,
         dataset_name: str | None = None,
         table_name: str | None = None,
-        columns_type: ColType | None = None,
+        target_rows: List[str] | None = None,
+        target_columns: ColType | None = None,
         worker_batch_size: int = 64,
         num_workers: Optional[int] = None,
         max_candidates_in_result: int = 5,
@@ -60,6 +61,7 @@ class Alligator(DatabaseAccessMixin):
         correct_qids: Dict[str, str | List[str]] | None = None,
         **kwargs,
     ) -> None:
+        # Checks
         if input_csv is None:
             raise ValueError("Input CSV or DataFrame must be provided.")
         self.input_csv = input_csv
@@ -76,9 +78,18 @@ class Alligator(DatabaseAccessMixin):
             table_name = os.path.basename(self.input_csv).split(".")[0]
         self.dataset_name = dataset_name
         self.table_name = table_name
-        self.columns_type = columns_type
+
+        # Set up rows and columns
+        self.target_rows = target_rows or []
+        self.target_rows = [str(row) for row in self.target_rows]
+        self.target_rows = list(set(self.target_rows))
+        self.target_columns = target_columns
+
+        # Worker config
         self.worker_batch_size = worker_batch_size
         self.num_workers = num_workers or max(1, mp.cpu_count() // 2)
+
+        # Retrievers config
         self.max_candidates_in_result = max_candidates_in_result
         self.entity_retrieval_endpoint = entity_retrieval_endpoint or os.getenv(
             "ENTITY_RETRIEVAL_ENDPOINT"
@@ -95,6 +106,8 @@ class Alligator(DatabaseAccessMixin):
             "LITERAL_RETRIEVAL_ENDPOINT"
         )
         self.candidate_retrieval_limit = candidate_retrieval_limit
+
+        # ML config
         self.ranker_model_path = ranker_model_path or os.path.join(
             PROJECT_ROOT, "alligator", "models", "ranker.h5"
         )
@@ -103,10 +116,14 @@ class Alligator(DatabaseAccessMixin):
         )
         self.ml_worker_batch_size = ml_worker_batch_size
         self.num_ml_workers = num_ml_workers
+
+        # Feature config
         self.top_n_cta_cpa_freq = top_n_cta_cpa_freq
         self.doc_percentage_type_features = doc_percentage_type_features
         if not (0 < self.doc_percentage_type_features <= 1):
             raise ValueError("doc_percentage_type_features must be between 0 and 1 (exclusive).")
+
+        # Misc
         self._mongo_uri = kwargs.pop("mongo_uri", None) or self._DEFAULT_MONGO_URI
         self._db_name = kwargs.pop("db_name", None) or self._DB_NAME
         self._save_output = save_output
@@ -118,6 +135,8 @@ class Alligator(DatabaseAccessMixin):
             elif not isinstance(value, list):
                 raise ValueError(f"Correct QIDs for {key} must be a string or a list of strings.")
         self._dry_run = kwargs.pop("dry_run", False)
+
+        # Initializations
         self.mongo_wrapper = MongoWrapper(
             self._mongo_uri,
             self._DB_NAME,
@@ -133,8 +152,6 @@ class Alligator(DatabaseAccessMixin):
             mongo_uri=self._mongo_uri,
             input_collection=self._INPUT_COLLECTION,
         )
-
-        # Instantiate our helper objects
         self.candidate_fetcher = CandidateFetcher(
             self.entity_retrieval_endpoint,
             self.entity_retrieval_token,
@@ -145,10 +162,7 @@ class Alligator(DatabaseAccessMixin):
             input_collection=self._INPUT_COLLECTION,
             cache_collection=self._CACHE_COLLECTION,
         )
-
-        # Create optional object and literal fetchers if endpoints provided
         self.object_fetcher = None
-        self.literal_fetcher = None
         if self.object_retrieval_endpoint:
             self.object_fetcher = ObjectFetcher(
                 self.object_retrieval_endpoint,
@@ -157,7 +171,7 @@ class Alligator(DatabaseAccessMixin):
                 mongo_uri=self._mongo_uri,
                 cache_collection=self._OBJECT_CACHE_COLLECTION,
             )
-
+        self.literal_fetcher = None
         if self.literal_retrieval_endpoint:
             self.literal_fetcher = LiteralFetcher(
                 self.literal_retrieval_endpoint,
@@ -166,7 +180,6 @@ class Alligator(DatabaseAccessMixin):
                 mongo_uri=self._mongo_uri,
                 cache_collection=self._LITERAL_CACHE_COLLECTION,
             )
-
         self.row_processor = RowBatchProcessor(
             self.dataset_name,
             self.table_name,
@@ -184,7 +197,7 @@ class Alligator(DatabaseAccessMixin):
         self.mongo_wrapper.create_indexes()
 
         # Onboard data
-        self.onboard_data(self.dataset_name, self.table_name, columns_type=self.columns_type)
+        self.onboard_data(self.dataset_name, self.table_name, target_columns=self.target_columns)
 
     def close_mongo_connection(self):
         """Cleanup when instance is destroyed"""
@@ -199,7 +212,7 @@ class Alligator(DatabaseAccessMixin):
         self,
         dataset_name: str | None = None,
         table_name: str | None = None,
-        columns_type: ColType | None = None,
+        target_columns: ColType | None = None,
     ):
         """Efficiently load data into MongoDB using batched inserts."""
         start_time = time.perf_counter()
@@ -242,15 +255,15 @@ class Alligator(DatabaseAccessMixin):
                 lit_cols[str(idx)] = classification
             classified_columns[str(idx)] = classification
 
-        if columns_type is not None:
-            ne_cols = columns_type.get("NE", ne_cols)
+        if target_columns is not None:
+            ne_cols = target_columns.get("NE", ne_cols)
             for col in ne_cols:
                 ne_cols[col] = classified_columns.get(col, "UNKNOWN")
-            lit_cols = columns_type.get("LIT", lit_cols)
+            lit_cols = target_columns.get("LIT", lit_cols)
             for col in lit_cols:
                 if not lit_cols[col]:
                     lit_cols[col] = classified_columns.get(col, "UNKNOWN")
-            ignored_cols = columns_type.get("IGNORED", ignored_cols)
+            ignored_cols = target_columns.get("IGNORED", ignored_cols)
 
         all_recognized_cols = set(ne_cols.keys()) | set(lit_cols.keys())
         all_cols = set([str(i) for i in range(len(sample.columns))])
@@ -294,6 +307,9 @@ class Alligator(DatabaseAccessMixin):
             documents = []
             for i, (_, row) in enumerate(chunk.iterrows()):
                 row_id = start_idx + i
+                if str(row_id) not in self.target_rows and self.target_rows:
+                    continue
+
                 document = {
                     "dataset_name": dataset_name,
                     "table_name": table_name,

@@ -556,17 +556,17 @@ class Alligator(DatabaseAccessMixin):
         dataset_name: str,
         error_log_collection_name: str,
         input_collection_name: str,
-        ranker_model_path_str: str,
-        reranker_model_path_str: str,
-        ml_worker_batch_size_val: int,
+        ranker_model_path: str,
+        reranker_model_path: str,
+        ml_worker_batch_size: int,
         max_candidates_rerank: int,
-        top_n_cta_cpa_freq_val: int,
-        selected_features_list: List[str],
-        mongo_uri_val: str,
-        db_name_val: str,
+        top_n_cta_cpa_freq: int,
+        selected_features: List[str],
+        mongo_uri: str,
+        db_name: str,
     ):
         """Static method wrapper for ML workers, suitable for multiprocessing."""
-        model_path_to_use = ranker_model_path_str if stage == "rank" else reranker_model_path_str
+        model_path_to_use = ranker_model_path if stage == "rank" else reranker_model_path
         max_candidates_for_stage = -1 if stage == "rank" else max_candidates_rerank
 
         worker = MLWorker(
@@ -577,12 +577,12 @@ class Alligator(DatabaseAccessMixin):
             error_log_collection=error_log_collection_name,
             input_collection=input_collection_name,
             model_path=model_path_to_use,
-            batch_size=ml_worker_batch_size_val,
+            batch_size=ml_worker_batch_size,
             max_candidates_in_result=max_candidates_for_stage,
-            top_n_cta_cpa_freq=top_n_cta_cpa_freq_val,
-            features=selected_features_list,
-            mongo_uri=mongo_uri_val,
-            db_name=db_name_val,
+            top_n_cta_cpa_freq=top_n_cta_cpa_freq,
+            features=selected_features,
+            mongo_uri=mongo_uri,
+            db_name=db_name,
         )
         return worker.run(global_frequencies=global_frequencies)
 
@@ -677,14 +677,14 @@ class Alligator(DatabaseAccessMixin):
                 "dataset_name": self.dataset_name,
                 "error_log_collection_name": self._ERROR_LOG_COLLECTION,
                 "input_collection_name": self._INPUT_COLLECTION,
-                "ranker_model_path_str": self.ranker_model_path,
-                "reranker_model_path_str": self.reranker_model_path,
-                "ml_worker_batch_size_val": self.ml_worker_batch_size,
+                "ranker_model_path": self.ranker_model_path,
+                "reranker_model_path": self.reranker_model_path,
+                "ml_worker_batch_size": self.ml_worker_batch_size,
                 "max_candidates_rerank": self.max_candidates_in_result,
-                "top_n_cta_cpa_freq_val": self.top_n_cta_cpa_freq,
-                "selected_features_list": self.feature.selected_features,
-                "mongo_uri_val": self._mongo_uri,
-                "db_name_val": self._DB_NAME,
+                "top_n_cta_cpa_freq": self.top_n_cta_cpa_freq,
+                "selected_features": self.feature.selected_features,
+                "mongo_uri": self._mongo_uri,
+                "db_name": self._DB_NAME,
             }
 
             # First ML ranking stage

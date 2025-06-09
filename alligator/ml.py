@@ -66,7 +66,7 @@ class MLWorker(DatabaseAccessMixin):
         global_frequencies: Tuple[
             Dict[Any, Counter] | None,
             Dict[Any, Counter] | None,
-            Dict[Any, Dict[Any, Counter] | None],
+            Dict[Any, Dict[Any, Counter]] | None,
         ] = (None, None, None),
     ) -> None:
         """Process candidates directly from input_collection"""

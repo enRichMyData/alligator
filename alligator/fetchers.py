@@ -1,15 +1,37 @@
 import asyncio
+import hashlib
+import json
 import traceback
+from functools import lru_cache
+from typing import Dict, List, Optional
 from urllib.parse import quote
 
 import aiohttp
 
-from alligator import MY_TIMEOUT
+from alligator.database import DatabaseAccessMixin
 from alligator.feature import Feature
 from alligator.mongo import MongoCache, MongoWrapper
+from alligator.typing import LiteralsData, ObjectsData
 
 
-class CandidateFetcher:
+@lru_cache(maxsize=int(2**31) - 1)
+def get_cache_key(**kwargs) -> str:
+    """
+    Generate a unique cache key based on arbitrary keyword arguments.
+
+    Args:
+        **kwargs: Arbitrary keyword arguments representing request parameters.
+
+    Returns:
+        str: A SHA256 hash string uniquely representing the parameter set.
+    """
+    # Serialize parameters with sorted keys for consistency
+    serialized = json.dumps(kwargs, sort_keys=True, default=str)
+    key = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    return key
+
+
+class CandidateFetcher(DatabaseAccessMixin):
     """
     Extracted logic for fetching candidates.
     Takes a reference to the Alligator instance so we can access
@@ -22,34 +44,55 @@ class CandidateFetcher:
         token: str,
         num_candidates: int,
         feature: Feature,
+        session: aiohttp.ClientSession,
+        use_cache: bool = True,
         **kwargs,
     ):
         self.endpoint = endpoint
         self.token = token
         self.num_candidates = num_candidates
         self.feature = feature
+        self.session = session
         self._db_name = kwargs.get("db_name", "alligator_db")
         self._mongo_uri = kwargs.get("mongo_uri", "mongodb://gator-mongodb:27017")
         self.input_collection = kwargs.get("input_collection", "input_data")
         self.cache_collection = kwargs.get("cache_collection", "candidate_cache")
         self.mongo_wrapper = MongoWrapper(self._mongo_uri, self._db_name)
+        self.use_cache = use_cache
+        if self.use_cache:
+            self.cache = MongoCache(self._mongo_uri, self._db_name, self.cache_collection)
+        else:
+            self.cache = None
 
-    def get_db(self):
-        """Get MongoDB database connection for current process"""
-        from alligator.mongo import MongoConnectionManager
+    def get_candidate_cache(self) -> Optional[MongoCache]:
+        return self.cache
 
-        client = MongoConnectionManager.get_client(self._mongo_uri)
-        return client[self._db_name]
+    async def fetch_candidates_batch(
+        self,
+        entities: List[str],
+        fuzzies: List[bool],
+        qids: List[List[str]],
+    ) -> Dict[str, List[dict]]:
+        """
+        Fetch candidates for multiple entities in a batch.
 
-    def get_candidate_cache(self):
-        return MongoCache(self.get_db(), self.cache_collection)
+        Args:
+            entities: List of entity names to find candidates for
+            fuzzies: Whether to use fuzzy matching for each entity
+            qids: Known correct QIDs for each entity (optional)
 
-    async def fetch_candidates_batch(self, entities, row_texts, fuzzies, qids):
-        """Fetch candidates for a batch of entities"""
-        return await self.fetch_candidates_batch_async(entities, row_texts, fuzzies, qids)
+        Returns:
+            Dictionary mapping entity names to lists of candidate dictionaries
+        """
+        return await self.fetch_candidates_batch_async(entities, fuzzies, qids)
 
     async def _fetch_candidates(
-        self, entity_name, row_text, fuzzy, qid, session, cache: bool = True
+        self,
+        entity_name,
+        fuzzy,
+        qid,
+        use_cache: bool = False,
+        kind: str = "entity",
     ):
         """
         This used to be Alligator._fetch_candidates. Logic unchanged.
@@ -59,6 +102,8 @@ class CandidateFetcher:
             f"{self.endpoint}?name={encoded_entity_name}"
             f"&limit={self.num_candidates}&fuzzy={fuzzy}"
             f"&token={self.token}"
+            f"&kind={kind}"
+            f"&cache={str(use_cache)}"
         )
         if qid:
             url += f"&ids={qid}"
@@ -66,7 +111,7 @@ class CandidateFetcher:
         backoff = 1
         for attempts in range(5):
             try:
-                async with session.get(url) as response:
+                async with self.session.get(url) as response:
                     response.raise_for_status()
                     fetched_candidates = await response.json()
 
@@ -87,21 +132,19 @@ class CandidateFetcher:
                         )
 
                     # Merge with existing cache if present
-                    cache = self.get_candidate_cache()
-                    cache_key = f"{entity_name}_{fuzzy}"
-                    cached_result = cache.get(cache_key)
+                    if cache := self.get_candidate_cache():
+                        cache_key = get_cache_key(
+                            endpoint=self.endpoint,
+                            token=self.token,
+                            num_candidates=self.num_candidates,
+                            entity_name=entity_name,
+                            fuzzy=fuzzy,
+                            qid=qid,
+                            kind=kind,
+                        )
+                        cache.put(cache_key, fetched_candidates)
 
-                    if cached_result:
-                        all_candidates = {c["id"]: c for c in cached_result if "id" in c}
-                        for c in fetched_candidates:
-                            if c.get("id"):
-                                all_candidates[c["id"]] = c
-                        merged_candidates = list(all_candidates.values())
-                    else:
-                        merged_candidates = fetched_candidates
-
-                    cache.put(cache_key, merged_candidates)
-                    return entity_name, merged_candidates
+                    return entity_name, fetched_candidates
 
             except Exception:
                 if attempts == 4:
@@ -117,46 +160,52 @@ class CandidateFetcher:
         # If all attempts fail
         return entity_name, []
 
-    async def fetch_candidates_batch_async(self, entities, row_texts, fuzzies, qids):
+    async def fetch_candidates_batch_async(self, entities, fuzzies, qids: List[List[str]]):
         """
         This used to be Alligator.fetch_candidates_batch_async.
         """
         results = {}
-        cache = self.get_candidate_cache()
         to_fetch = []
 
         # Decide which entities need to be fetched
-        for entity_name, fuzzy, row_text, qid_str in zip(entities, fuzzies, row_texts, qids):
-            cache_key = f"{entity_name}_{fuzzy}"
-            cached_result = cache.get(cache_key)
-            forced_qids = qid_str.split() if qid_str else []
+        for entity_name, fuzzy, qids in zip(entities, fuzzies, qids):
+            qid_str = " ".join(qids) if qids else ""
+
+            if cache := self.get_candidate_cache():
+                cache_key = get_cache_key(
+                    endpoint=self.endpoint,
+                    token=self.token,
+                    num_candidates=self.num_candidates,
+                    entity_name=entity_name,
+                    fuzzy=fuzzy,
+                    qid=qid_str,
+                    kind="entity",
+                )
+                cached_result = cache.get(cache_key)
+            else:
+                cached_result = None
 
             if cached_result is not None:
-                if forced_qids:
+                if len(qids) > 0:
                     cached_qids = {c["id"] for c in cached_result if "id" in c}
-                    if all(q in cached_qids for q in forced_qids):
+                    if all(q in cached_qids for q in qids):
                         results[entity_name] = cached_result
                     else:
-                        to_fetch.append((entity_name, fuzzy, row_text, qid_str))
+                        to_fetch.append((entity_name, fuzzy, qid_str))
                 else:
                     results[entity_name] = cached_result
             else:
-                to_fetch.append((entity_name, fuzzy, row_text, qid_str))
+                to_fetch.append((entity_name, fuzzy, qid_str))
 
         if not to_fetch:
             return self._remove_placeholders(results)
 
-        async with aiohttp.ClientSession(
-            timeout=MY_TIMEOUT, connector=aiohttp.TCPConnector(ssl=False, limit=10)
-        ) as session:
-            tasks = []
-            for entity_name, fuzzy, row_text, qid_str in to_fetch:
-                tasks.append(
-                    self._fetch_candidates(entity_name, row_text, fuzzy, qid_str, session)
-                )
-            done = await asyncio.gather(*tasks, return_exceptions=False)
-            for entity_name, candidates in done:
-                results[entity_name] = candidates
+        tasks = []
+        for entity_name, fuzzy, qid_str in to_fetch:
+            tasks.append(self._fetch_candidates(entity_name, fuzzy, qid_str))
+        done = await asyncio.gather(*tasks, return_exceptions=False)
+        for entity_name, candidates in done:
+            results[entity_name] = candidates
 
         return self._remove_placeholders(results)
 
@@ -167,31 +216,34 @@ class CandidateFetcher:
         return results
 
 
-class ObjectFetcher:
+class ObjectFetcher(DatabaseAccessMixin):
     """
     Fetcher for retrieving object information from LAMAPI.
     """
 
-    def __init__(self, endpoint: str, token: str, **kwargs):
+    def __init__(self, endpoint: str, token: str, session: aiohttp.ClientSession, **kwargs):
         self.endpoint = endpoint
         self.token = token
+        self.session = session
         self._db_name = kwargs.get("db_name", "alligator_db")
         self._mongo_uri = kwargs.get("mongo_uri", "mongodb://gator-mongodb:27017")
         self.cache_collection = kwargs.get("cache_collection", "object_cache")
         self.mongo_wrapper = MongoWrapper(self._mongo_uri, self._db_name)
-
-    def get_db(self):
-        """Get MongoDB database connection for current process"""
-        from alligator.mongo import MongoConnectionManager
-
-        client = MongoConnectionManager.get_client(self._mongo_uri)
-        return client[self._db_name]
+        self.cache = MongoCache(self._mongo_uri, self._db_name, self.cache_collection)
 
     def get_object_cache(self):
-        return MongoCache(self.get_db(), self.cache_collection)
+        return self.cache
 
-    async def fetch_objects(self, entity_ids):
-        """Fetch objects for a list of entity IDs."""
+    async def fetch_objects(self, entity_ids: List[str]) -> Dict[str, ObjectsData]:
+        """
+        Fetch object data for multiple entity IDs.
+
+        Args:
+            entity_ids: List of entity IDs to fetch object data for
+
+        Returns:
+            Dictionary mapping entity IDs to their object data
+        """
         if not entity_ids:
             return {}
 
@@ -212,66 +264,65 @@ class ObjectFetcher:
 
         # Prepare batch request for non-cached IDs
         url = f"{self.endpoint}?token={self.token}"
+        backoff = 1
+        for attempts in range(5):
+            try:
+                # Use the correct JSON structure: {"json": [...]} instead of {"ids": [...]}
+                request_data = {"json": to_fetch}
+                async with self.session.post(url, json=request_data) as response:
+                    response.raise_for_status()
+                    data = await response.json()
 
-        async with aiohttp.ClientSession(
-            timeout=MY_TIMEOUT, connector=aiohttp.TCPConnector(ssl=False, limit=10)
-        ) as session:
-            backoff = 1
-            for attempts in range(5):
-                try:
-                    # Use the correct JSON structure: {"json": [...]} instead of {"ids": [...]}
-                    request_data = {"json": to_fetch}
-                    async with session.post(url, json=request_data) as response:
-                        response.raise_for_status()
-                        data = await response.json()
+                    # Update cache and results
+                    for entity_id, objects_data in data.items():
+                        cache.put(entity_id, objects_data)
+                        results[entity_id] = objects_data
 
-                        # Update cache and results
-                        for entity_id, objects_data in data.items():
-                            cache.put(entity_id, objects_data)
-                            results[entity_id] = objects_data
+                    return results
 
-                        return results
-
-                except Exception:
-                    if attempts == 4:
-                        self.mongo_wrapper.log_to_db(
-                            "FETCH_OBJECTS_ERROR",
-                            "Error fetching objects for entities",
-                            traceback.format_exc(),
-                            attempt=attempts + 1,
-                        )
-                    await asyncio.sleep(backoff)
-                    backoff = min(backoff * 2, 16)
+            except Exception:
+                if attempts == 4:
+                    self.mongo_wrapper.log_to_db(
+                        "FETCH_OBJECTS_ERROR",
+                        "Error fetching objects for entities",
+                        traceback.format_exc(),
+                        attempt=attempts + 1,
+                    )
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 16)
 
         # If all attempts fail, return what we have
         return results
 
 
-class LiteralFetcher:
+class LiteralFetcher(DatabaseAccessMixin):
     """
     Fetcher for retrieving literal information from LAMAPI.
     """
 
-    def __init__(self, endpoint: str, token: str, **kwargs):
+    def __init__(self, endpoint: str, token: str, session: aiohttp.ClientSession, **kwargs):
         self.endpoint = endpoint
         self.token = token
+        self.session = session
         self._db_name = kwargs.get("db_name", "alligator_db")
         self._mongo_uri = kwargs.get("mongo_uri", "mongodb://gator-mongodb:27017")
         self.cache_collection = kwargs.get("cache_collection", "literal_cache")
         self.mongo_wrapper = MongoWrapper(self._mongo_uri, self._db_name)
-
-    def get_db(self):
-        """Get MongoDB database connection for current process"""
-        from alligator.mongo import MongoConnectionManager
-
-        client = MongoConnectionManager.get_client(self._mongo_uri)
-        return client[self._db_name]
+        self.cache = MongoCache(self._mongo_uri, self._db_name, self.cache_collection)
 
     def get_literal_cache(self):
-        return MongoCache(self.get_db(), self.cache_collection)
+        return self.cache
 
-    async def fetch_literals(self, entity_ids):
-        """Fetch literals for a list of entity IDs."""
+    async def fetch_literals(self, entity_ids: List[str]) -> Dict[str, LiteralsData]:
+        """
+        Fetch literal values for multiple entity IDs.
+
+        Args:
+            entity_ids: List of entity IDs to fetch literal values for
+
+        Returns:
+            Dictionary mapping entity IDs to their literal values
+        """
         if not entity_ids:
             return {}
 
@@ -292,36 +343,32 @@ class LiteralFetcher:
 
         # Prepare batch request for non-cached IDs
         url = f"{self.endpoint}?token={self.token}"
+        backoff = 1
+        for attempts in range(5):
+            try:
+                # Use the correct JSON structure: {"json": [...]} instead of {"ids": [...]}
+                request_data = {"json": to_fetch}
+                async with self.session.post(url, json=request_data) as response:
+                    response.raise_for_status()
+                    data = await response.json()
 
-        async with aiohttp.ClientSession(
-            timeout=MY_TIMEOUT, connector=aiohttp.TCPConnector(ssl=False, limit=10)
-        ) as session:
-            backoff = 1
-            for attempts in range(5):
-                try:
-                    # Use the correct JSON structure: {"json": [...]} instead of {"ids": [...]}
-                    request_data = {"json": to_fetch}
-                    async with session.post(url, json=request_data) as response:
-                        response.raise_for_status()
-                        data = await response.json()
+                    # Update cache and results
+                    for entity_id, literals_data in data.items():
+                        cache.put(entity_id, literals_data)
+                        results[entity_id] = literals_data
 
-                        # Update cache and results
-                        for entity_id, literals_data in data.items():
-                            cache.put(entity_id, literals_data)
-                            results[entity_id] = literals_data
+                    return results
 
-                        return results
-
-                except Exception:
-                    if attempts == 4:
-                        self.mongo_wrapper.log_to_db(
-                            "FETCH_LITERALS_ERROR",
-                            "Error fetching literals for entities",
-                            traceback.format_exc(),
-                            attempt=attempts + 1,
-                        )
-                    await asyncio.sleep(backoff)
-                    backoff = min(backoff * 2, 16)
+            except Exception:
+                if attempts == 4:
+                    self.mongo_wrapper.log_to_db(
+                        "FETCH_LITERALS_ERROR",
+                        "Error fetching literals for entities",
+                        traceback.format_exc(),
+                        attempt=attempts + 1,
+                    )
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 16)
 
         # If all attempts fail, return what we have
         return results

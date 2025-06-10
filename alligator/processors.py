@@ -1,18 +1,19 @@
-import hashlib
 import traceback
 from collections import defaultdict
-from typing import Dict, List
+from typing import Any, Dict, List, Set
 
 import pandas as pd
+from pymongo import UpdateOne
 
+from alligator.database import DatabaseAccessMixin
 from alligator.feature import Feature
 from alligator.fetchers import CandidateFetcher, LiteralFetcher, ObjectFetcher
 from alligator.mongo import MongoWrapper
-from alligator.typing import Entity, RowData
-from alligator.utils import tokenize_text
+from alligator.typing import Candidate, Entity, RowData
+from alligator.utils import ColumnHelper, clean_str
 
 
-class RowBatchProcessor:
+class RowBatchProcessor(DatabaseAccessMixin):
     """
     Extracted logic for process_rows_batch (and associated scoring helpers).
     Takes the Alligator instance so we can reference .mongo_wrapper, .feature, etc.
@@ -20,29 +21,29 @@ class RowBatchProcessor:
 
     def __init__(
         self,
+        dataset_name: str,
+        table_name: str,
         feature: Feature,
         candidate_fetcher: CandidateFetcher,
-        object_fetcher: ObjectFetcher = None,
-        literal_fetcher: LiteralFetcher = None,
+        object_fetcher: ObjectFetcher | None = None,
+        literal_fetcher: LiteralFetcher | None = None,
         max_candidates_in_result: int = 5,
+        fuzzy_retry: bool = False,
         **kwargs,
     ):
+        self.dataset_name = dataset_name
+        self.table_name = table_name
         self.feature = feature
         self.candidate_fetcher = candidate_fetcher
         self.object_fetcher = object_fetcher
         self.literal_fetcher = literal_fetcher
         self.max_candidates_in_result = max_candidates_in_result
+        self.fuzzy_retry = fuzzy_retry
         self._db_name = kwargs.get("db_name", "alligator_db")
         self._mongo_uri = kwargs.get("mongo_uri", "mongodb://gator-mongodb:27017")
         self.input_collection = kwargs.get("input_collection", "input_data")
+        self.candidate_collection = kwargs.get("candidate_collection", "candidates")
         self.mongo_wrapper = MongoWrapper(self._mongo_uri, self._db_name)
-
-    def get_db(self):
-        """Get MongoDB database connection for current process"""
-        from alligator.mongo import MongoConnectionManager
-
-        client = MongoConnectionManager.get_client(self._mongo_uri)
-        return client[self._db_name]
 
     async def process_rows_batch(self, docs):
         """
@@ -56,10 +57,10 @@ class RowBatchProcessor:
             entities, row_data_list = self._extract_entities(docs)
 
             # 2) Fetch initial candidates in one batch
-            candidates_results = await self._fetch_all_candidates(entities)
+            candidates = await self._fetch_all_candidates(entities)
 
             # 3) Process each row and update DB
-            await self._process_rows(row_data_list, candidates_results)
+            await self._process_rows(row_data_list, candidates)
 
         except Exception:
             self.mongo_wrapper.log_to_db(
@@ -75,229 +76,231 @@ class RowBatchProcessor:
 
         for doc in docs:
             row = doc["data"]
+            cleaned_row = [clean_str(str(cell)) for cell in row]
             ne_columns = doc["classified_columns"].get("NE", {})
             lit_columns = doc["classified_columns"].get("LIT", {})
             context_columns = doc.get("context_columns", [])
             correct_qids = doc.get("correct_qids", {})
             row_index = doc.get("row_id")
 
-            # Build context text
-            context_text = " ".join(str(row[int(c)]) for c in sorted(context_columns, key=int))
-            normalized_text = " ".join(context_text.lower().split())
-            row_hash = hashlib.sha256(normalized_text.encode()).hexdigest()
-
             # Create row data
             row_data = RowData(
                 doc_id=doc["_id"],
-                row=row,
+                row=cleaned_row,
                 ne_columns=ne_columns,
                 lit_columns=lit_columns,
                 context_columns=context_columns,
                 correct_qids=correct_qids,
                 row_index=row_index,
-                context_text=context_text,
-                row_hash=row_hash,
             )
             row_data_list.append(row_data)
 
             # Extract entities from this row
             for col_idx, ner_type in ne_columns.items():
-                col_idx_str = str(col_idx)
-                col_idx_int = int(col_idx_str)
-
-                # Skip if column index is out of bounds
-                if col_idx_int >= len(row):
+                normalized_col = ColumnHelper.normalize(col_idx)
+                if not ColumnHelper.is_valid_index(normalized_col, len(row)):
                     continue
 
-                cell_value = row[col_idx_int]
-                # Skip empty or NA values
+                cell_value = cleaned_row[ColumnHelper.to_int(normalized_col)]
                 if not cell_value or pd.isna(cell_value):
                     continue
 
-                # Normalize value
-                normalized_value = str(cell_value).strip().replace("_", " ").lower()
-                correct_qid = correct_qids.get(f"{row_index}-{col_idx_str}")
-
-                # Create entity
+                qids = correct_qids.get(f"{row_index}-{normalized_col}", [])
                 entity = Entity(
-                    value=normalized_value,
+                    value=cell_value,
                     row_index=row_index,
-                    col_index=col_idx_str,
-                    context_text=context_text,
-                    correct_qid=correct_qid,
+                    col_index=normalized_col,
+                    correct_qids=qids,
                     fuzzy=False,
                 )
                 entities.append(entity)
 
         return entities, row_data_list
 
-    async def _fetch_all_candidates(self, entities: List[Entity]) -> Dict[str, List[dict]]:
+    async def _fetch_all_candidates(self, entities: List[Entity]) -> Dict[str, List[Candidate]]:
         """
         Fetch candidates for all entities, with fuzzy retry for poor results.
+        Now optimized to fetch only distinct mentions per batch.
         """
-        # Initial fetch
+        # Group entities by their fetch signature (value + fuzzy + qids)
+        fetch_groups = defaultdict(list)
+        for entity in entities:
+            qids_key = tuple(sorted(entity.correct_qids)) if entity.correct_qids else ()
+            fetch_key = (entity.value, entity.fuzzy, qids_key)
+            fetch_groups[fetch_key].append(entity)
+
+        # Create unique fetch requests
+        unique_entities = []
+        unique_fuzzies = []
+        unique_qids = []
+
+        for (value, fuzzy, qids_tuple), _ in fetch_groups.items():
+            unique_entities.append(value)
+            unique_fuzzies.append(fuzzy)
+            unique_qids.append(list(qids_tuple))
+
+        print(
+            f"Fetching candidates for {len(unique_entities)} distinct mentions "
+            f"(from {len(entities)} total entities)"
+        )
+
+        # Initial fetch with deduplicated requests
         initial_results = await self.candidate_fetcher.fetch_candidates_batch(
-            entities=[e.value for e in entities],
-            row_texts=[e.context_text for e in entities],
-            fuzzies=[e.fuzzy for e in entities],
-            qids=[e.correct_qid for e in entities],
+            entities=unique_entities,
+            fuzzies=unique_fuzzies,
+            qids=unique_qids,
         )
 
         # Find entities needing fuzzy retry
-        retry_entities = []
-        for entity in entities:
-            candidates = initial_results.get(entity.value, [])
-            if len(candidates) <= 1:
-                # Create a copy of the entity with fuzzy=True
-                retry_entity = Entity(
-                    value=entity.value,
-                    row_index=entity.row_index,
-                    col_index=entity.col_index,
-                    context_text=entity.context_text,
-                    correct_qid=entity.correct_qid,
-                    fuzzy=True,
-                )
-                retry_entities.append(retry_entity)
+        retry_fetch_groups = defaultdict(list)
+        for (value, fuzzy, qids_tuple), entity_group in fetch_groups.items():
+            candidates = initial_results.get(value, [])
+            if self.fuzzy_retry and not fuzzy and len(candidates) < 1:
+                # Group retry entities by their retry signature
+                retry_key = (value, True, qids_tuple)  # fuzzy=True for retry
+                retry_fetch_groups[retry_key].extend(entity_group)
 
-        # Perform fuzzy retry if needed
-        if retry_entities:
+        # Perform fuzzy retry if needed (also deduplicated)
+        if retry_fetch_groups:
+            retry_entities = []
+            retry_fuzzies = []
+            retry_qids = []
+
+            for (value, fuzzy, qids_tuple), _ in retry_fetch_groups.items():
+                retry_entities.append(value)
+                retry_fuzzies.append(fuzzy)
+                retry_qids.append(list(qids_tuple))
+
+            print(f"Performing fuzzy retry for {len(retry_entities)} distinct mentions")
+
             retry_results = await self.candidate_fetcher.fetch_candidates_batch(
-                entities=[e.value for e in retry_entities],
-                row_texts=[e.context_text for e in retry_entities],
-                fuzzies=[e.fuzzy for e in retry_entities],
-                qids=[e.correct_qid for e in retry_entities],
+                entities=retry_entities,
+                fuzzies=retry_fuzzies,
+                qids=retry_qids,
             )
 
             # Update with retry results
-            for entity in retry_entities:
-                if entity.value in retry_results:
-                    initial_results[entity.value] = retry_results[entity.value]
+            for value in retry_entities:
+                if value in retry_results:
+                    initial_results[value] = retry_results[value]
 
-        return initial_results
+        # Convert to Candidate objects (reuse results for all entities with same mention)
+        candidates: Dict[str, List[Candidate]] = defaultdict(list)
+        for mention, candidates_list in initial_results.items():
+            for candidate in candidates_list:
+                candidate_dict: Dict[str, Any] = {"features": {}}
+                for key, value in candidate.items():
+                    if key in self.feature.selected_features:
+                        candidate_dict["features"][key] = value
+                    else:
+                        candidate_dict[key] = value
+                candidates[mention].append(Candidate.from_dict(candidate_dict))
+
+        return candidates
 
     async def _process_rows(
-        self, row_data_list: List[RowData], candidates_results: Dict[str, List[dict]]
+        self, row_data_list: List[RowData], candidates: Dict[str, List[Candidate]]
     ):
+        bulk_cand = []
+        bulk_input = []
         db = self.get_db()
 
         """Process each row and update database."""
         for row_data in row_data_list:
-            # Process each entity in the row
-            self._process_row_entities(row_data, candidates_results)
+            entity_ids = set()
+            candidates_by_col = {}
+            row_value = " ".join(str(v) for v in row_data.row)
+            for col_idx, ner_type in row_data.ne_columns.items():
+                normalized_col = ColumnHelper.normalize(col_idx)
+                if not ColumnHelper.is_valid_index(normalized_col, len(row_data.row)):
+                    continue
+
+                cell_value = row_data.row[ColumnHelper.to_int(normalized_col)]
+                if not cell_value or pd.isna(cell_value):
+                    continue
+
+                mention_candidates = candidates.get(cell_value, [])
+                if mention_candidates:
+                    candidates_by_col[normalized_col] = mention_candidates
+                    for cand in mention_candidates:
+                        if cand.id:
+                            entity_ids.add(cand.id)
+
+                # Process each entity in the row
+                self._compute_features(cell_value, row_value, mention_candidates)
 
             # Enhance with additional features if possible
             if self.object_fetcher and self.literal_fetcher:
-                await self._enhance_with_lamapi_features(row_data, candidates_results)
+                await self._enhance_with_lamapi_features(row_data, entity_ids, candidates_by_col)
 
-            # Build final results
-            training_candidates = self._rank_candidates_by_col(row_data, candidates_results)
-
-            # Update database
-            db[self.input_collection].update_one(
-                {"_id": row_data.doc_id},
-                {
-                    "$set": {
-                        "candidates": training_candidates,
-                        "status": "DONE",
-                        "rank_status": "TODO",
-                        "rerank_status": "TODO",
-                    }
-                },
+            # Update the status in the input collection
+            bulk_input.append(
+                UpdateOne(
+                    {"_id": row_data.doc_id},
+                    {
+                        "$set": {
+                            "status": "DONE",
+                            "rank_status": "TODO",
+                            "rerank_status": "TODO",
+                        }
+                    },
+                )
             )
 
-    def _process_row_entities(self, row_data: RowData, candidates_results: Dict[str, List[dict]]):
-        """Process entities in a row by computing features."""
-        for col_idx, ner_type in row_data.ne_columns.items():
-            col_idx_int = int(col_idx)
+            # Store candidates in separate normalized documents
+            for col_id, col_candidates in candidates_by_col.items():
+                # Create one document per column
+                bulk_cand.append(
+                    UpdateOne(
+                        {
+                            "row_id": str(row_data.row_index),
+                            "col_id": str(col_id),
+                            "owner_id": row_data.doc_id,
+                        },
+                        {"$set": {"candidates": [c.to_dict() for c in col_candidates]}},
+                        upsert=True,
+                    )
+                )
+        bulk_batch_size = 8192
+        if bulk_cand:
+            for i in range(0, len(bulk_cand), bulk_batch_size):
+                db[self.candidate_collection].bulk_write(
+                    bulk_cand[i : i + bulk_batch_size], ordered=False
+                )
 
-            if col_idx_int >= len(row_data.row):
-                continue
+        if bulk_input:
+            for i in range(0, len(bulk_input), bulk_batch_size):
+                db[self.input_collection].bulk_write(
+                    bulk_input[i : i + bulk_batch_size], ordered=False
+                )
 
-            cell_value = row_data.row[col_idx_int]
-            if not cell_value or pd.isna(cell_value):
-                continue
+    def _compute_features(self, entity_value: str, row_value: str, candidates: List[Candidate]):
+        """Process entities by computing features. Feature computation
+        is done in-place over the candidates."""
 
-            # Normalize value
-            entity_value = str(cell_value).strip().replace("_", " ").lower()
-            candidates = candidates_results.get(entity_value, [])
-
-            # Process candidates with features
-            row_tokens = set(tokenize_text(entity_value))
-            candidates_results[entity_value] = self.feature.process_candidates(
-                candidates, entity_value, row_tokens
-            )
+        self.feature.process_candidates(candidates, entity_value, row_value)
 
     async def _enhance_with_lamapi_features(
-        self, row_data: RowData, candidates_results: Dict[str, List[dict]]
+        self,
+        row_data: RowData,
+        entity_ids: Set[str],
+        candidates_by_col: Dict[str, List[Candidate]],
     ):
         """Enhance candidates with LAMAPI features."""
-        # Collect all candidates by column
-        all_candidates_by_col = {}
-        all_entity_ids = set()
-
-        for col_idx, ner_type in row_data.ne_columns.items():
-            col_idx_int = int(col_idx)
-
-            if col_idx_int >= len(row_data.row):
-                continue
-
-            cell_value = row_data.row[col_idx_int]
-            if not cell_value or pd.isna(cell_value):
-                continue
-
-            # Normalize value
-            entity_value = str(cell_value).strip().replace("_", " ").lower()
-            candidates = candidates_results.get(entity_value, [])
-
-            if candidates:
-                all_candidates_by_col[col_idx] = candidates
-                for cand in candidates:
-                    if cand.get("id"):
-                        all_entity_ids.add(cand["id"])
-                        # Initialize tracking structures
-                        cand.setdefault("matches", defaultdict(list))
-                        cand.setdefault("predicates", defaultdict(dict))
-
-        if not all_entity_ids:
-            return
 
         # Fetch external data
-        objects_data = await self.object_fetcher.fetch_objects(list(all_entity_ids))
-        literals_data = await self.literal_fetcher.fetch_literals(list(all_entity_ids))
+        objects_data = None
+        if self.object_fetcher:
+            objects_data = await self.object_fetcher.fetch_objects(list(entity_ids))
 
-        if not objects_data and not literals_data:
-            return
+        literals_data = None
+        if self.literal_fetcher:
+            literals_data = await self.literal_fetcher.fetch_literals(list(entity_ids))
 
-        # Process entity-entity relationships
-        self.feature.compute_entity_entity_relationships(all_candidates_by_col, objects_data)
+        if objects_data is not None:
+            self.feature.compute_entity_entity_relationships(candidates_by_col, objects_data)
 
-        # Process entity-literal relationships
-        self.feature.compute_entity_literal_relationships(
-            all_candidates_by_col, row_data.lit_columns, row_data.row, literals_data
-        )
-
-    def _rank_candidates_by_col(
-        self, row_data: RowData, candidates_results: Dict[str, List[dict]]
-    ) -> Dict[str, List[dict]]:
-        """Build final ranked candidate lists by column."""
-        candidates_by_col = {}
-
-        for col_idx, ner_type in row_data.ne_columns.items():
-            col_idx_int = int(col_idx)
-
-            if col_idx_int >= len(row_data.row):
-                continue
-
-            cell_value = row_data.row[col_idx_int]
-            if not cell_value or pd.isna(cell_value):
-                continue
-
-            # Normalize value
-            entity_value = str(cell_value).strip().replace("_", " ").lower()
-            candidates = candidates_results.get(entity_value, [])
-
-            # Rank candidates
-            ranked_candidates = sorted(candidates, key=lambda x: x.get("score", 0.0), reverse=True)
-            candidates_by_col[col_idx] = ranked_candidates
-
-        return candidates_by_col
+        if literals_data is not None:
+            self.feature.compute_entity_literal_relationships(
+                candidates_by_col, row_data.lit_columns, row_data.row, literals_data
+            )

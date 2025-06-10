@@ -173,4 +173,11 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
-mongo_data
+mongo_data/
+eval/tables/
+eval/results/
+
+**/.DS_Store
+**/launch.json
+**/settings.json
+**/.python-version

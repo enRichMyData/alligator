@@ -3,23 +3,25 @@ import multiprocessing as mp
 import os
 import time
 import uuid
-from collections import Counter
 from functools import partial
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Counter, Dict, List, Optional, Tuple
 
+import aiohttp
 import pandas as pd
 from column_classifier import ColumnClassifier
 
-from alligator import PROJECT_ROOT
+from alligator import PROJECT_ROOT, TIMEOUT
+from alligator.database import DatabaseAccessMixin
 from alligator.feature import Feature
 from alligator.fetchers import CandidateFetcher, LiteralFetcher, ObjectFetcher
 from alligator.ml import MLWorker
+from alligator.mongo import MongoWrapper
 from alligator.processors import RowBatchProcessor
 from alligator.typing import ColType
 
 
-class Alligator:
+class Alligator(DatabaseAccessMixin):
     """
     Alligator entity linking system with hidden MongoDB configuration.
     """
@@ -34,12 +36,14 @@ class Alligator:
 
     def __init__(
         self,
-        input_csv: str | Path | pd.DataFrame,
+        input_csv: str | Path | pd.DataFrame | None = None,
         output_csv: str | Path | None = None,
-        dataset_name: str = None,
-        table_name: str = None,
-        columns_type: ColType | None = None,
-        max_workers: Optional[int] = None,
+        dataset_name: str | None = None,
+        table_name: str | None = None,
+        target_rows: List[str] | None = None,
+        target_columns: ColType | None = None,
+        worker_batch_size: int = 64,
+        num_workers: Optional[int] = None,
         max_candidates_in_result: int = 5,
         entity_retrieval_endpoint: Optional[str] = None,
         entity_retrieval_token: Optional[str] = None,
@@ -49,18 +53,23 @@ class Alligator:
         candidate_retrieval_limit: int = 16,
         ranker_model_path: Optional[str] = None,
         reranker_model_path: Optional[str] = None,
-        batch_size: int = 1024,
-        ml_ranking_workers: int = 2,
-        top_n_for_type_freq: int = 3,
-        doc_percentage_type_features: float = 0.7,
+        ml_worker_batch_size: int = 256,
+        num_ml_workers: int = 2,
+        top_n_cta_cpa_freq: int = 3,
+        doc_percentage_type_features: float = 1.0,
+        save_output: bool = True,
         save_output_to_csv: bool = True,
+        correct_qids: Dict[str, str | List[str]] | None = None,
+        http_session_limit: int = 32,
+        http_session_ssl_verify: bool = False,
         **kwargs,
     ) -> None:
-        from alligator.mongo import MongoWrapper
-
+        # Checks
+        if input_csv is None:
+            raise ValueError("Input CSV or DataFrame must be provided.")
         self.input_csv = input_csv
         self.output_csv = output_csv
-        if self.output_csv is None and save_output_to_csv:
+        if save_output and self.output_csv is None and save_output_to_csv:
             if isinstance(self.input_csv, pd.DataFrame):
                 raise ValueError(
                     "An output name must be specified is the input is a `pd.Dataframe`"
@@ -69,11 +78,24 @@ class Alligator:
         if dataset_name is None:
             dataset_name = uuid.uuid4().hex
         if table_name is None:
-            table_name = os.path.basename(self.input_csv).split(".")[0]
+            if isinstance(self.input_csv, str):
+                table_name = os.path.basename(self.input_csv).split(".")[0]
+            else:
+                table_name = "default_table"
         self.dataset_name = dataset_name
         self.table_name = table_name
-        self.columns_type = columns_type
-        self.max_workers = max_workers or mp.cpu_count()
+
+        # Set up rows and columns
+        self.target_rows = target_rows or []
+        self.target_rows = [str(row) for row in self.target_rows]
+        self.target_rows = list(set(self.target_rows))
+        self.target_columns = target_columns
+
+        # Worker config
+        self.worker_batch_size = worker_batch_size
+        self.num_workers = num_workers or max(1, mp.cpu_count() // 2)
+
+        # Retrievers config
         self.max_candidates_in_result = max_candidates_in_result
         self.entity_retrieval_endpoint = entity_retrieval_endpoint or os.getenv(
             "ENTITY_RETRIEVAL_ENDPOINT"
@@ -90,52 +112,95 @@ class Alligator:
             "LITERAL_RETRIEVAL_ENDPOINT"
         )
         self.candidate_retrieval_limit = candidate_retrieval_limit
+
+        # ML config
         self.ranker_model_path = ranker_model_path or os.path.join(
             PROJECT_ROOT, "alligator", "models", "ranker.h5"
         )
         self.reranker_model_path = reranker_model_path or os.path.join(
             PROJECT_ROOT, "alligator", "models", "reranker.h5"
         )
-        self.batch_size = batch_size
-        self.ml_ranking_workers = ml_ranking_workers
-        self.top_n_for_type_freq = top_n_for_type_freq
+        self.ml_worker_batch_size = ml_worker_batch_size
+        self.num_ml_workers = num_ml_workers
+
+        # Feature config
+        self.top_n_cta_cpa_freq = top_n_cta_cpa_freq
         self.doc_percentage_type_features = doc_percentage_type_features
         if not (0 < self.doc_percentage_type_features <= 1):
             raise ValueError("doc_percentage_type_features must be between 0 and 1 (exclusive).")
+        self._http_session_limit = http_session_limit
+        self._http_session_ssl_verify = http_session_ssl_verify
+        self._shared_http_session: Optional[aiohttp.ClientSession] = None
         self._mongo_uri = kwargs.pop("mongo_uri", None) or self._DEFAULT_MONGO_URI
+        self._db_name = kwargs.pop("db_name", None) or self._DB_NAME
+        self._save_output = save_output
         self._save_output_to_csv = save_output_to_csv
+        self.correct_qids = correct_qids or {}
+        for key, value in self.correct_qids.items():
+            if isinstance(value, str):
+                self.correct_qids[key] = [value]
+            elif not isinstance(value, list):
+                raise ValueError(f"Correct QIDs for {key} must be a string or a list of strings.")
+        self._dry_run = kwargs.pop("dry_run", False)
+
+        # Initializations
         self.mongo_wrapper = MongoWrapper(
-            self._mongo_uri, self._DB_NAME, self._ERROR_LOG_COLLECTION
+            self._mongo_uri,
+            self._DB_NAME,
+            self._INPUT_COLLECTION,
+            self._ERROR_LOG_COLLECTION,
         )
         self.feature = Feature(
             dataset_name,
             table_name,
-            top_n_for_type_freq=top_n_for_type_freq,
+            top_n_cta_cpa_freq=top_n_cta_cpa_freq,
             features=selected_features,
             db_name=self._DB_NAME,
             mongo_uri=self._mongo_uri,
             input_collection=self._INPUT_COLLECTION,
         )
 
-        # Instantiate our helper objects
+        # Initialize fetchers to None; they will be created in _initialize_async_components
+        self.candidate_fetcher: Optional[CandidateFetcher] = None
+        self.object_fetcher: Optional[ObjectFetcher] = None
+        self.literal_fetcher: Optional[LiteralFetcher] = None
+        self.row_processor: Optional[RowBatchProcessor] = None
+
+        # Create indexes
+        self.mongo_wrapper.create_indexes()
+
+        # Onboard data
+        self.onboard_data(self.dataset_name, self.table_name, target_columns=self.target_columns)
+
+    async def _initialize_async_components(self) -> aiohttp.ClientSession:
+        """Initializes components that require an active event loop or async operations.
+        Each process must create its own HTTP session!
+        """
+        connector = aiohttp.TCPConnector(
+            limit=self._http_session_limit, ssl=self._http_session_ssl_verify
+        )
+        session = aiohttp.ClientSession(connector=connector, timeout=TIMEOUT)
+        print(
+            f"Created HTTP session with limit {self._http_session_limit} "
+            f"and SSL verify {self._http_session_ssl_verify}."
+        )
+
         self.candidate_fetcher = CandidateFetcher(
             self.entity_retrieval_endpoint,
             self.entity_retrieval_token,
             self.candidate_retrieval_limit,
             self.feature,
+            session=session,
             db_name=self._DB_NAME,
             mongo_uri=self._mongo_uri,
             input_collection=self._INPUT_COLLECTION,
             cache_collection=self._CACHE_COLLECTION,
         )
-
-        # Create optional object and literal fetchers if endpoints provided
-        self.object_fetcher = None
-        self.literal_fetcher = None
         if self.object_retrieval_endpoint:
             self.object_fetcher = ObjectFetcher(
                 self.object_retrieval_endpoint,
                 self.entity_retrieval_token,
+                session=session,
                 db_name=self._DB_NAME,
                 mongo_uri=self._mongo_uri,
                 cache_collection=self._OBJECT_CACHE_COLLECTION,
@@ -145,12 +210,14 @@ class Alligator:
             self.literal_fetcher = LiteralFetcher(
                 self.literal_retrieval_endpoint,
                 self.entity_retrieval_token,
+                session=session,
                 db_name=self._DB_NAME,
                 mongo_uri=self._mongo_uri,
                 cache_collection=self._LITERAL_CACHE_COLLECTION,
             )
-
-        self._row_processor = RowBatchProcessor(
+        self.row_processor = RowBatchProcessor(
+            self.dataset_name,
+            self.table_name,
             self.feature,
             self.candidate_fetcher,
             self.object_fetcher,
@@ -160,16 +227,7 @@ class Alligator:
             mongo_uri=self._mongo_uri,
             input_collection=self._INPUT_COLLECTION,
         )
-
-        # Create indexes
-        self.mongo_wrapper.create_indexes()
-
-    def get_db(self):
-        """Get MongoDB database connection for current process"""
-        from alligator.mongo import MongoConnectionManager
-
-        client = MongoConnectionManager.get_client(self._mongo_uri)
-        return client[self._DB_NAME]
+        return session
 
     def close_mongo_connection(self):
         """Cleanup when instance is destroyed"""
@@ -180,27 +238,11 @@ class Alligator:
         except Exception:
             pass
 
-    def claim_todo_batch(self, input_collection, batch_size=16):
-        docs = []
-        for _ in range(batch_size):
-            doc = input_collection.find_one_and_update(
-                {
-                    "dataset_name": self.dataset_name,
-                    "table_name": self.table_name,
-                    "status": "TODO",
-                },
-                {"$set": {"status": "DOING"}},
-            )
-            if doc is None:
-                break
-            docs.append(doc)
-        return docs
-
     def onboard_data(
         self,
-        dataset_name: str = None,
-        table_name: str = None,
-        columns_type: ColType | None = None,
+        dataset_name: str | None = None,
+        table_name: str | None = None,
+        target_columns: ColType | None = None,
     ):
         """Efficiently load data into MongoDB using batched inserts."""
         start_time = time.perf_counter()
@@ -216,32 +258,42 @@ class Alligator:
             total_rows = len(df)
             is_csv_path = False
         else:
-            sample = pd.read_csv(self.input_csv, nrows=1024)
-            total_rows = "unknown"
+            sample = pd.read_csv(self.input_csv, nrows=32)
+            total_rows = -1
             is_csv_path = True
 
         print(f"Onboarding {total_rows} rows for dataset '{dataset_name}', table '{table_name}'")
 
         # Step 2: Perform column classification
-        if columns_type is None:
-            classifier = ColumnClassifier(model_type="fast")
-            classification_results = classifier.classify_multiple_tables([sample])
-            table_classification = classification_results[0].get("table_1", {})
+        classifier = ColumnClassifier(model_type="fast")
+        classification_results = classifier.classify_multiple_tables([sample])
+        table_classification = classification_results[0].get("table_1", {})
 
-            ne_cols, lit_cols, ignored_cols = {}, {}, []
-            NE_classifications = {"PERSON", "OTHER", "ORGANIZATION", "LOCATION"}
+        ne_cols, lit_cols, ignored_cols = {}, {}, []
+        ne_types = {"PERSON", "OTHER", "ORGANIZATION", "LOCATION"}
+        lit_types = {"NUMBER", "DATE", "STRING"}
 
-            for idx, col in enumerate(sample.columns):
-                col_result = table_classification.get(col, {})
-                classification = col_result.get("classification", "UNKNOWN")
-                if classification in NE_classifications:
-                    ne_cols[str(idx)] = classification
-                else:
-                    lit_cols[str(idx)] = classification
-        else:
-            ne_cols = columns_type.get("NE", {})
-            lit_cols = columns_type.get("LIT", {})
-            ignored_cols = columns_type.get("IGNORED", [])
+        classified_columns = {}
+        for idx, col in enumerate(sample.columns):
+            col_result = table_classification.get(col, {})
+            classification = col_result.get("classification", "UNKNOWN")
+            if classification in ne_types:
+                ne_cols[str(idx)] = classification
+            elif classification in lit_types:
+                if classification == "DATE":
+                    classification = "DATETIME"
+                lit_cols[str(idx)] = classification
+            classified_columns[str(idx)] = classification
+
+        if target_columns is not None:
+            ne_cols = target_columns.get("NE", ne_cols)
+            for col in ne_cols:
+                ne_cols[col] = classified_columns.get(col, "UNKNOWN")
+            lit_cols = target_columns.get("LIT", lit_cols)
+            for col in lit_cols:
+                if not lit_cols[col]:
+                    lit_cols[col] = classified_columns.get(col, "UNKNOWN")
+            ignored_cols = target_columns.get("IGNORED", ignored_cols)
 
         all_recognized_cols = set(ne_cols.keys()) | set(lit_cols.keys())
         all_cols = set([str(i) for i in range(len(sample.columns))])
@@ -249,23 +301,32 @@ class Alligator:
             ignored_cols.extend(list(all_cols - all_recognized_cols))
         ignored_cols = list(set(ignored_cols))
         context_cols = list(set([str(i) for i in range(len(sample.columns))]) - set(ignored_cols))
+        context_cols = sorted(context_cols, key=lambda x: int(x))
 
         # Step 3: Define a chunk generator function
         def get_chunks():
             """Generator that yields chunks of rows, handling both DF and CSV."""
-            if is_csv_path:
-                chunk_size = 2048
-                row_count = 0
-                for chunk in pd.read_csv(self.input_csv, chunksize=chunk_size):
-                    yield chunk, row_count
-                    row_count += len(chunk)
+            if self._dry_run:
+                if is_csv_path:
+                    yield pd.read_csv(self.input_csv, nrows=1), 0
+                else:
+                    yield df.iloc[:1], 0
             else:
-                chunk_size = 1024 if total_rows > 100000 else 2048 if total_rows > 10000 else 4096
-                total_chunks = (total_rows + chunk_size - 1) // chunk_size
-                for chunk_idx in range(total_chunks):
-                    chunk_start = chunk_idx * chunk_size
-                    chunk_end = min(chunk_start + chunk_size, total_rows)
-                    yield df.iloc[chunk_start:chunk_end], chunk_start
+                if is_csv_path:
+                    chunk_size = 2048
+                    row_count = 0
+                    for chunk in pd.read_csv(self.input_csv, chunksize=chunk_size):
+                        yield chunk, row_count
+                        row_count += len(chunk)
+                else:
+                    chunk_size = (
+                        1024 if total_rows > 100000 else 2048 if total_rows > 10000 else 4096
+                    )
+                    total_chunks = (total_rows + chunk_size - 1) // chunk_size
+                    for chunk_idx in range(total_chunks):
+                        chunk_start = chunk_idx * chunk_size
+                        chunk_end = min(chunk_start + chunk_size, total_rows)
+                        yield df.iloc[chunk_start:chunk_end], chunk_start
 
         # Step 4: Process all chunks using the generator
         processed_rows = 0
@@ -276,10 +337,13 @@ class Alligator:
             documents = []
             for i, (_, row) in enumerate(chunk.iterrows()):
                 row_id = start_idx + i
+                if str(row_id) not in self.target_rows and self.target_rows:
+                    continue
+
                 document = {
                     "dataset_name": dataset_name,
                     "table_name": table_name,
-                    "row_id": row_id,
+                    "row_id": str(row_id),
                     "data": row.tolist(),
                     "classified_columns": {
                         "NE": ne_cols,
@@ -287,9 +351,18 @@ class Alligator:
                         "IGNORED": ignored_cols,
                     },
                     "context_columns": context_cols,
-                    "correct_qids": {},
                     "status": "TODO",
                 }
+                correct_qids = {}
+                for col_id, _ in ne_cols.items():
+                    key = f"{row_id}-{col_id}"
+                    if key in self.correct_qids:
+                        correct_qids[key] = self.correct_qids[key]
+                        if isinstance(correct_qids[key], str):
+                            correct_qids[key] = [correct_qids[key]]
+                        else:
+                            correct_qids[key] = list(set(correct_qids[key]))
+                document["correct_qids"] = correct_qids
                 documents.append(document)
 
             if documents:
@@ -327,7 +400,7 @@ class Alligator:
             f"({processed_rows/total_time:.1f} rows/sec)"
         )
 
-    def fetch_results(self):
+    def save_output(self):
         """Retrieves processed documents from MongoDB using memory-efficient streaming.
 
         For large tables, this avoids loading all results into memory at once.
@@ -345,7 +418,6 @@ class Alligator:
             header = self.input_csv.columns.tolist()
         elif isinstance(self.input_csv, str):
             header = pd.read_csv(self.input_csv, nrows=0).columns.tolist()
-        num_cols = len(header)
 
         # Get first document to determine column count if header is still None
         sample_doc = input_collection.find_one(
@@ -357,7 +429,7 @@ class Alligator:
 
         if header is None:
             print("Could not extract header from input table, using generic column names.")
-            header = [f"col_{i}" for i in range(num_cols)]
+            header = [f"col_{i}" for i in range(len(sample_doc["data"]))]
 
         # Process in batches with cursor
         batch_size = 1024  # Process 1024 documents at a time
@@ -467,26 +539,33 @@ class Alligator:
     def ml_worker(
         self,
         rank: int,
-        stage: str = "rank",
-        global_type_counts: Dict[Any, Counter] = None,
+        stage: str,
+        global_frequencies: Tuple[
+            Dict[Any, Counter] | None,
+            Dict[Any, Counter] | None,
+            Dict[Any, Dict[Any, Counter]] | None,
+        ],
     ):
-        """Unified wrapper function for ML workers"""
+        """Static method wrapper for ML workers, suitable for multiprocessing."""
+        model_path_to_use = self.ranker_model_path if stage == "rank" else self.reranker_model_path
+        max_candidates_for_stage = -1 if stage == "rank" else self.max_candidates_in_result
+
         worker = MLWorker(
             rank,
             table_name=self.table_name,
             dataset_name=self.dataset_name,
             stage=stage,
-            error_log_collection_name=self._ERROR_LOG_COLLECTION,
+            error_log_collection=self._ERROR_LOG_COLLECTION,
             input_collection=self._INPUT_COLLECTION,
-            model_path=self.ranker_model_path if stage == "rank" else self.reranker_model_path,
-            batch_size=self.batch_size,
-            max_candidates_in_result=self.max_candidates_in_result if stage == "rerank" else -1,
-            top_n_for_type_freq=self.top_n_for_type_freq,
+            model_path=model_path_to_use,
+            batch_size=self.ml_worker_batch_size,
+            max_candidates_in_result=max_candidates_for_stage,
+            top_n_cta_cpa_freq=self.top_n_cta_cpa_freq,
             features=self.feature.selected_features,
             mongo_uri=self._mongo_uri,
             db_name=self._DB_NAME,
         )
-        return worker.run(global_type_counts=global_type_counts)
+        return worker.run(global_frequencies=global_frequencies)
 
     async def process_batch(self, docs):
         tasks_by_table = {}
@@ -496,60 +575,123 @@ class Alligator:
             tasks_by_table.setdefault((dataset_name, table_name), []).append(doc)
 
         for (dataset_name, table_name), table_docs in tasks_by_table.items():
-            await self._row_processor.process_rows_batch(table_docs)
+            await self.row_processor.process_rows_batch(table_docs)
 
     async def worker_async(self, rank: int):
+        session = await self._initialize_async_components()
+
         db = self.get_db()
         input_collection = db[self._INPUT_COLLECTION]
-        total_rows = self.mongo_wrapper.count_documents(input_collection, {"status": "TODO"})
-        while True:
-            todo_docs = self.claim_todo_batch(
-                input_collection, batch_size=max(1, total_rows // self.max_workers)
+
+        total_docs = input_collection.count_documents(
+            {
+                "dataset_name": self.dataset_name,
+                "table_name": self.table_name,
+            }
+        )
+
+        docs_per_worker = total_docs // self.num_workers
+        remainder = total_docs % self.num_workers
+
+        # Adjust batch size for this specific worker
+        # Give extra documents to earlier workers if not evenly divisible
+        if rank < remainder:
+            batch_size = docs_per_worker + 1
+            skip = rank * (docs_per_worker + 1)
+        else:
+            batch_size = docs_per_worker
+            skip = (remainder * (docs_per_worker + 1)) + ((rank - remainder) * docs_per_worker)
+        print(f"Worker {rank} started with batch size {batch_size}, skipping {skip}.")
+
+        # Find documents to process for this worker using skip/limit
+        cursor = (
+            input_collection.find(
+                {
+                    "dataset_name": self.dataset_name,
+                    "table_name": self.table_name,
+                }
             )
-            if not todo_docs:
-                print("No more tasks to process.")
-                break
+            .skip(skip)
+            .limit(batch_size)
+        )
+
+        todo_docs = []
+        for doc in cursor:
+            input_collection.update_one({"_id": doc["_id"]}, {"$set": {"status": "DOING"}})
+            if len(todo_docs) < self.worker_batch_size:
+                todo_docs.append(doc)
+            else:
+                print(f"Worker {rank} processing batch of {len(todo_docs)} documents.")
+                await self.process_batch(todo_docs)
+                print(f"Worker {rank} processed {len(todo_docs)} documents.")
+                todo_docs = [doc]
+        if todo_docs:
+            print(f"Worker {rank} processing final batch of {len(todo_docs)} documents.")
             await self.process_batch(todo_docs)
+            print(f"Worker {rank} finished processing documents.")
+
+        await session.close()
 
     def worker(self, rank: int):
         asyncio.run(self.worker_async(rank))
 
     def run(self):
-        self.onboard_data(self.dataset_name, self.table_name, columns_type=self.columns_type)
-
         db = self.get_db()
         input_collection = db[self._INPUT_COLLECTION]
 
         total_rows = self.mongo_wrapper.count_documents(input_collection, {"status": "TODO"})
         print(f"Found {total_rows} tasks to process.")
 
-        with mp.Pool(processes=self.max_workers) as pool:
-            pool.map(self.worker, range(self.max_workers))
+        processes = []
+        for rank in range(self.num_workers):
+            p = mp.Process(target=self.worker, args=(rank,))
+            p.start()
+            processes.append(p)
+        for p in processes:
+            p.join()
+            p.close()
 
-        with mp.Pool(processes=self.ml_ranking_workers) as pool:
-            pool.map(
-                partial(
-                    self.ml_worker,
-                    stage="rank",
-                    global_type_counts={},
-                ),
-                range(self.ml_ranking_workers),
+        pool = mp.Pool(processes=self.num_workers)
+        try:
+            # First ML ranking stage
+            rank_stage_partial_func = partial(
+                self.ml_worker,
+                stage="rank",
+                global_frequencies=(None, None, None),
             )
+            pool.map(rank_stage_partial_func, range(self.num_ml_workers))
+            print("ML Rank stage complete.")
 
-        global_type_counts = self.feature.compute_global_type_frequencies(
-            docs_to_process=self.doc_percentage_type_features, random_sample=True
-        )
-
-        with mp.Pool(processes=self.ml_ranking_workers) as pool:
-            pool.map(
-                partial(
-                    self.ml_worker,
-                    stage="rerank",
-                    global_type_counts=global_type_counts,
-                ),
-                range(self.ml_ranking_workers),
+            # Compute global frequencies (this happens in the main process)
+            print("Computing global frequencies...")
+            (
+                type_frequencies,
+                predicate_frequencies,
+                predicate_pair_frequencies,
+            ) = self.feature.compute_global_frequencies(
+                docs_to_process=self.doc_percentage_type_features, random_sample=False
             )
+            print("Global frequencies computed.")
+
+            # Second ML ranking stage with global frequencies
+            rerank_stage_partial_func = partial(
+                self.ml_worker,
+                stage="rerank",
+                global_frequencies=(
+                    type_frequencies,
+                    predicate_frequencies,
+                    predicate_pair_frequencies,
+                ),
+            )
+            pool.map(rerank_stage_partial_func, range(self.num_ml_workers))
+            print("ML Rerank stage complete.")
+        finally:
+            pool.close()
+            pool.join()
 
         print("All tasks have been processed.")
-        extracted_rows = self.fetch_results()
+        if self._save_output:
+            extracted_rows = self.save_output()
+        else:
+            extracted_rows = []
         return extracted_rows

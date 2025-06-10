@@ -1,86 +1,92 @@
-import os
-from datetime import datetime
-from threading import Lock
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, TypeVar
 
-from pymongo import ASCENDING, MongoClient
+import pymongo
+from pymongo import ASCENDING
 from pymongo.collection import Collection
 from pymongo.database import Database
 from pymongo.results import DeleteResult, InsertManyResult, InsertOneResult, UpdateResult
 
+from alligator.database import DatabaseAccessMixin, DatabaseManager
+
 T = TypeVar("T")
 
 
-class MongoCache:
-    """MongoDB-based cache for storing key-value pairs."""
+class MongoCache(DatabaseAccessMixin):
+    """MongoDB-based cache for storing key-value pairs with TTL and capped collection."""
 
-    def __init__(self, db: Database, collection_name: str) -> None:
-        self.collection: Collection = db[collection_name]
-        self.collection.create_index("key", unique=True)
-
-    def get(self, key: str) -> Optional[Any]:
-        result: Optional[Dict[str, Any]] = self.collection.find_one({"key": key})
-        if result:
-            return result["value"]
-        return None
-
-    def put(self, key: str, value: Any) -> None:
-        self.collection.update_one({"key": key}, {"$set": {"value": value}}, upsert=True)
-
-
-class MongoConnectionManager:
-    _instances: Dict[int, MongoClient] = {}
-    _lock: Lock = Lock()
-
-    @classmethod
-    def get_client(cls, mongo_uri: str) -> MongoClient:
-        pid: int = os.getpid()
-        with cls._lock:
-            if pid not in cls._instances:
-                client: MongoClient = MongoClient(
-                    mongo_uri,
-                    maxPoolSize=100,
-                    minPoolSize=8,
-                    waitQueueTimeoutMS=30000,
-                    retryWrites=True,
-                    serverSelectionTimeoutMS=30000,
-                    connectTimeoutMS=30000,
-                    socketTimeoutMS=30000,
-                )
-                cls._instances[pid] = client
-            return cls._instances[pid]
-
-    @classmethod
-    def close_connection(cls, pid: Optional[int] = None) -> None:
-        if pid is None:
-            pid = os.getpid()
-        with cls._lock:
-            if pid in cls._instances:
-                cls._instances[pid].close()
-                del cls._instances[pid]
-
-    @classmethod
-    def close_all_connections(cls) -> None:
-        with cls._lock:
-            for client in cls._instances.values():
-                client.close()
-            cls._instances.clear()
-
-
-class MongoWrapper:
     def __init__(
         self,
         mongo_uri: str,
         db_name: str,
-        error_log_collection_name: str = "error_logs",
+        collection_name: str,
+        ttl_seconds: int | None = 7200,
+        capped_size_bytes: int = 524288000,  # 500 MB
+        capped_max_docs: int = 131072,  # 2^17
     ) -> None:
-        self.mongo_uri: str = mongo_uri
-        self.db_name: str = db_name
-        self.error_log_collection_name: str = error_log_collection_name
+        self._mongo_uri: str = mongo_uri
+        self._db_name: str = db_name
+        self._collection_name = collection_name
 
-    def get_db(self) -> Database:
-        client: MongoClient = MongoConnectionManager.get_client(self.mongo_uri)
-        return client[self.db_name]
+        # Create collection
+        db = self.get_db()
+        if collection_name not in db.list_collection_names():
+            if ttl_seconds is None:
+                db.create_collection(
+                    collection_name, capped=True, size=capped_size_bytes, max=capped_max_docs
+                )
+            else:
+                db.create_collection(collection_name, capped=False)
+
+        # Create indexes
+        collection = db[collection_name]
+        if ttl_seconds is not None:
+            collection.create_index("createdAt", expireAfterSeconds=ttl_seconds)
+        collection.create_index("key", unique=True)
+
+    def get_collection(self) -> Collection:
+        return self.get_db()[self._collection_name]
+
+    def get(self, cache_key: str) -> Any | None:
+        doc = self.get_collection().find_one({"key": cache_key})
+        if doc:
+            return doc["value"]
+        return None
+
+    def put(self, cache_key: str, value: Any):
+        self.get_collection().replace_one(
+            {"key": cache_key},
+            {"key": cache_key, "value": value, "createdAt": datetime.now(timezone.utc)},
+            upsert=True,
+        )
+
+
+class MongoConnectionManager:
+    """Legacy connection manager, now delegating to DatabaseManager."""
+
+    @classmethod
+    def get_client(cls, uri: str) -> pymongo.MongoClient:
+        """Get a MongoDB client with connection pooling."""
+        return DatabaseManager.get_connection(uri)
+
+    @classmethod
+    def close_connection(cls) -> None:
+        """Close all connections."""
+        DatabaseManager.close_all_connections()
+
+
+class MongoWrapper(DatabaseAccessMixin):
+    def __init__(
+        self,
+        mongo_uri: str,
+        db_name: str,
+        input_collection: str = "input_data",
+        error_log_collection: str = "error_logs",
+    ) -> None:
+        self._mongo_uri: str = mongo_uri
+        self._db_name: str = db_name
+        self.input_collection_name: str = input_collection
+        self.error_log_collection: str = error_log_collection
 
     def update_document(
         self,
@@ -154,7 +160,7 @@ class MongoWrapper:
         self, level: str, message: str, trace: Optional[str] = None, attempt: Optional[int] = None
     ) -> None:
         db: Database = self.get_db()
-        log_collection: Collection = db[self.error_log_collection_name]
+        log_collection: Collection = db[self.error_log_collection]
         log_entry: Dict[str, Any] = {
             "timestamp": datetime.now(),
             "level": level,
@@ -169,6 +175,7 @@ class MongoWrapper:
     def create_indexes(self):
         db: Database = self.get_db()
         input_collection: Collection = db["input_data"]
+        candidate_collection: Collection = db["candidates"]
 
         input_collection.create_index([("dataset_name", ASCENDING), ("table_name", ASCENDING)])
         input_collection.create_index(
@@ -186,4 +193,16 @@ class MongoWrapper:
                 ("rank_status", ASCENDING),
                 ("rerank_status", ASCENDING),
             ]
+        )
+
+        candidate_collection.create_index([("owner_id", ASCENDING)])
+        candidate_collection.create_index([("owner_id", ASCENDING), ("row_id", ASCENDING)])
+        candidate_collection.create_index([("row_id", ASCENDING), ("col_id", ASCENDING)])
+        candidate_collection.create_index(
+            [
+                ("row_id", ASCENDING),
+                ("col_id", ASCENDING),
+                ("owner_id", ASCENDING),
+            ],
+            unique=True,
         )

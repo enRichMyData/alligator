@@ -264,9 +264,9 @@ def get_datasets(
     return {
         "data": datasets,
         "pagination": {
-            "next_cursor": str(next_cursor)
-            if next_cursor
-            else None  # removed limit from pagination output
+            "next_cursor": (
+                str(next_cursor) if next_cursor else None
+            )  # removed limit from pagination output
         },
     }
 
@@ -307,9 +307,9 @@ def get_tables(
         "dataset": dataset_name,
         "data": tables,
         "pagination": {
-            "next_cursor": str(next_cursor)
-            if next_cursor
-            else None  # removed limit from pagination output
+            "next_cursor": (
+                str(next_cursor) if next_cursor else None
+            )  # removed limit from pagination output
         },
     }
 
@@ -356,7 +356,7 @@ def get_table(
     rows_formatted = []
     for row in raw_rows:
         linked_entities = []
-        el_results = row.get("el_results", {})
+        el_results = row.get("cea", {})
 
         # For each column, gather all candidates
         for col_index in range(len(header)):

@@ -5,12 +5,13 @@ import time
 import uuid
 from functools import partial
 from pathlib import Path
-from typing import Counter, Dict, List, Optional, Tuple
+from typing import Any, Counter, Dict, List, Optional, Tuple
 
+import aiohttp
 import pandas as pd
 from column_classifier import ColumnClassifier
 
-from alligator import PROJECT_ROOT
+from alligator import PROJECT_ROOT, TIMEOUT
 from alligator.database import DatabaseAccessMixin
 from alligator.feature import Feature
 from alligator.fetchers import CandidateFetcher, LiteralFetcher, ObjectFetcher
@@ -59,6 +60,8 @@ class Alligator(DatabaseAccessMixin):
         save_output: bool = True,
         save_output_to_csv: bool = True,
         correct_qids: Dict[str, str | List[str]] | None = None,
+        http_session_limit: int = 32,
+        http_session_ssl_verify: bool = False,
         **kwargs,
     ) -> None:
         # Checks
@@ -75,7 +78,10 @@ class Alligator(DatabaseAccessMixin):
         if dataset_name is None:
             dataset_name = uuid.uuid4().hex
         if table_name is None:
-            table_name = os.path.basename(self.input_csv).split(".")[0]
+            if isinstance(self.input_csv, str):
+                table_name = os.path.basename(self.input_csv).split(".")[0]
+            else:
+                table_name = "default_table"
         self.dataset_name = dataset_name
         self.table_name = table_name
 
@@ -122,8 +128,9 @@ class Alligator(DatabaseAccessMixin):
         self.doc_percentage_type_features = doc_percentage_type_features
         if not (0 < self.doc_percentage_type_features <= 1):
             raise ValueError("doc_percentage_type_features must be between 0 and 1 (exclusive).")
-
-        # Misc
+        self._http_session_limit = http_session_limit
+        self._http_session_ssl_verify = http_session_ssl_verify
+        self._shared_http_session: Optional[aiohttp.ClientSession] = None
         self._mongo_uri = kwargs.pop("mongo_uri", None) or self._DEFAULT_MONGO_URI
         self._db_name = kwargs.pop("db_name", None) or self._DB_NAME
         self._save_output = save_output
@@ -152,30 +159,58 @@ class Alligator(DatabaseAccessMixin):
             mongo_uri=self._mongo_uri,
             input_collection=self._INPUT_COLLECTION,
         )
+
+        # Initialize fetchers to None; they will be created in _initialize_async_components
+        self.candidate_fetcher: Optional[CandidateFetcher] = None
+        self.object_fetcher: Optional[ObjectFetcher] = None
+        self.literal_fetcher: Optional[LiteralFetcher] = None
+        self.row_processor: Optional[RowBatchProcessor] = None
+
+        # Create indexes
+        self.mongo_wrapper.create_indexes()
+
+        # Onboard data
+        self.onboard_data(self.dataset_name, self.table_name, target_columns=self.target_columns)
+
+    async def _initialize_async_components(self) -> aiohttp.ClientSession:
+        """Initializes components that require an active event loop or async operations.
+        Each process must create its own HTTP session!
+        """
+        connector = aiohttp.TCPConnector(
+            limit=self._http_session_limit, ssl=self._http_session_ssl_verify
+        )
+        session = aiohttp.ClientSession(connector=connector, timeout=TIMEOUT)
+        print(
+            f"Created HTTP session with limit {self._http_session_limit} "
+            f"and SSL verify {self._http_session_ssl_verify}."
+        )
+
         self.candidate_fetcher = CandidateFetcher(
             self.entity_retrieval_endpoint,
             self.entity_retrieval_token,
             self.candidate_retrieval_limit,
             self.feature,
+            session=session,
             db_name=self._DB_NAME,
             mongo_uri=self._mongo_uri,
             input_collection=self._INPUT_COLLECTION,
             cache_collection=self._CACHE_COLLECTION,
         )
-        self.object_fetcher = None
         if self.object_retrieval_endpoint:
             self.object_fetcher = ObjectFetcher(
                 self.object_retrieval_endpoint,
                 self.entity_retrieval_token,
+                session=session,
                 db_name=self._DB_NAME,
                 mongo_uri=self._mongo_uri,
                 cache_collection=self._OBJECT_CACHE_COLLECTION,
             )
-        self.literal_fetcher = None
+
         if self.literal_retrieval_endpoint:
             self.literal_fetcher = LiteralFetcher(
                 self.literal_retrieval_endpoint,
                 self.entity_retrieval_token,
+                session=session,
                 db_name=self._DB_NAME,
                 mongo_uri=self._mongo_uri,
                 cache_collection=self._LITERAL_CACHE_COLLECTION,
@@ -192,12 +227,7 @@ class Alligator(DatabaseAccessMixin):
             mongo_uri=self._mongo_uri,
             input_collection=self._INPUT_COLLECTION,
         )
-
-        # Create indexes
-        self.mongo_wrapper.create_indexes()
-
-        # Onboard data
-        self.onboard_data(self.dataset_name, self.table_name, target_columns=self.target_columns)
+        return session
 
     def close_mongo_connection(self):
         """Cleanup when instance is destroyed"""
@@ -509,14 +539,17 @@ class Alligator(DatabaseAccessMixin):
     def ml_worker(
         self,
         rank: int,
-        stage: str = "rank",
-        global_frequencies=Tuple[
-            Dict[str, Counter] | None,
-            Dict[str, Counter] | None,
-            Dict[str, Dict[str, Counter]] | None,
+        stage: str,
+        global_frequencies: Tuple[
+            Dict[Any, Counter] | None,
+            Dict[Any, Counter] | None,
+            Dict[Any, Dict[Any, Counter]] | None,
         ],
     ):
-        """Unified wrapper function for ML workers"""
+        """Static method wrapper for ML workers, suitable for multiprocessing."""
+        model_path_to_use = self.ranker_model_path if stage == "rank" else self.reranker_model_path
+        max_candidates_for_stage = -1 if stage == "rank" else self.max_candidates_in_result
+
         worker = MLWorker(
             rank,
             table_name=self.table_name,
@@ -524,9 +557,9 @@ class Alligator(DatabaseAccessMixin):
             stage=stage,
             error_log_collection=self._ERROR_LOG_COLLECTION,
             input_collection=self._INPUT_COLLECTION,
-            model_path=self.ranker_model_path if stage == "rank" else self.reranker_model_path,
+            model_path=model_path_to_use,
             batch_size=self.ml_worker_batch_size,
-            max_candidates_in_result=self.max_candidates_in_result if stage == "rerank" else -1,
+            max_candidates_in_result=max_candidates_for_stage,
             top_n_cta_cpa_freq=self.top_n_cta_cpa_freq,
             features=self.feature.selected_features,
             mongo_uri=self._mongo_uri,
@@ -545,10 +578,11 @@ class Alligator(DatabaseAccessMixin):
             await self.row_processor.process_rows_batch(table_docs)
 
     async def worker_async(self, rank: int):
+        session = await self._initialize_async_components()
+
         db = self.get_db()
         input_collection = db[self._INPUT_COLLECTION]
 
-        # Count total documents to process
         total_docs = input_collection.count_documents(
             {
                 "dataset_name": self.dataset_name,
@@ -587,38 +621,49 @@ class Alligator(DatabaseAccessMixin):
             if len(todo_docs) < self.worker_batch_size:
                 todo_docs.append(doc)
             else:
+                print(f"Worker {rank} processing batch of {len(todo_docs)} documents.")
                 await self.process_batch(todo_docs)
                 print(f"Worker {rank} processed {len(todo_docs)} documents.")
                 todo_docs = [doc]
         if todo_docs:
+            print(f"Worker {rank} processing final batch of {len(todo_docs)} documents.")
             await self.process_batch(todo_docs)
+            print(f"Worker {rank} finished processing documents.")
+
+        await session.close()
 
     def worker(self, rank: int):
         asyncio.run(self.worker_async(rank))
 
-    async def run(self):
+    def run(self):
         db = self.get_db()
         input_collection = db[self._INPUT_COLLECTION]
 
         total_rows = self.mongo_wrapper.count_documents(input_collection, {"status": "TODO"})
         print(f"Found {total_rows} tasks to process.")
 
-        tasks = [self.worker_async(rank) for rank in range(self.num_workers)]
-        await asyncio.gather(*tasks)
+        processes = []
+        for rank in range(self.num_workers):
+            p = mp.Process(target=self.worker, args=(rank,))
+            p.start()
+            processes.append(p)
+        for p in processes:
+            p.join()
+            p.close()
 
         pool = mp.Pool(processes=self.num_workers)
         try:
-            # First ML ranking stage (no global frequencies needed)
-            pool.map(
-                partial(
-                    self.ml_worker,
-                    stage="rank",
-                    global_frequencies=(None, None, None),  # Empty tuple for first stage
-                ),
-                range(self.num_ml_workers),
+            # First ML ranking stage
+            rank_stage_partial_func = partial(
+                self.ml_worker,
+                stage="rank",
+                global_frequencies=(None, None, None),
             )
+            pool.map(rank_stage_partial_func, range(self.num_ml_workers))
+            print("ML Rank stage complete.")
 
-            # Compute both type and predicate frequencies
+            # Compute global frequencies (this happens in the main process)
+            print("Computing global frequencies...")
             (
                 type_frequencies,
                 predicate_frequencies,
@@ -626,20 +671,20 @@ class Alligator(DatabaseAccessMixin):
             ) = self.feature.compute_global_frequencies(
                 docs_to_process=self.doc_percentage_type_features, random_sample=False
             )
+            print("Global frequencies computed.")
 
             # Second ML ranking stage with global frequencies
-            pool.map(
-                partial(
-                    self.ml_worker,
-                    stage="rerank",
-                    global_frequencies=(
-                        type_frequencies,
-                        predicate_frequencies,
-                        predicate_pair_frequencies,
-                    ),
+            rerank_stage_partial_func = partial(
+                self.ml_worker,
+                stage="rerank",
+                global_frequencies=(
+                    type_frequencies,
+                    predicate_frequencies,
+                    predicate_pair_frequencies,
                 ),
-                range(self.num_ml_workers),
             )
+            pool.map(rerank_stage_partial_func, range(self.num_ml_workers))
+            print("ML Rerank stage complete.")
         finally:
             pool.close()
             pool.join()

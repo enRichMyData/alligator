@@ -1,5 +1,4 @@
 import argparse
-import asyncio
 import os
 import re
 import sys
@@ -18,7 +17,7 @@ from alligator.mongo import MongoWrapper
 load_dotenv(PROJECT_ROOT)
 
 
-async def main(args: argparse.Namespace):
+def main(args: argparse.Namespace):
     perf = {}
     gt = pd.read_csv(
         args.ground_truth,
@@ -95,7 +94,7 @@ async def main(args: argparse.Namespace):
             print(f"Table {tab_id} not found in the database. Proceeding with processing.")
 
         gator = Alligator(**args.gator)
-        await gator.run()
+        gator.run()
         toc = time.perf_counter()
         print(f"Processing completed in {toc - tic:0.4f} seconds.")
         perf[table_path] = {"elapsed_time": toc - tic, "nrows": len(table)}
@@ -135,4 +134,4 @@ if __name__ == "__main__":
     if not os.path.exists(args.tables_dir):
         print(f"Error: Directory {args.tables_dir} does not exist.")
         sys.exit(1)
-    asyncio.run(main(args))
+    main(args)

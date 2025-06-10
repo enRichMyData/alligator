@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-import asyncio
 import time
 
 from dotenv import load_dotenv
@@ -10,7 +9,7 @@ from alligator import Alligator
 load_dotenv()
 
 
-async def main():
+def main():
     parser = ArgumentParser()
     parser.add_class_arguments(Alligator, "gator")
     parser.add_argument(
@@ -24,10 +23,10 @@ async def main():
     print("🚀 Starting the entity linking process...")
     tic = time.perf_counter()
     gator = Alligator(**args.gator)
-    await gator.run()
+    gator.run()
     toc = time.perf_counter()
     print(f"✅ Entity linking process completed in {toc - tic:0.4f} seconds.")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

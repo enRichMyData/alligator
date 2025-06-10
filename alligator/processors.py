@@ -122,19 +122,16 @@ class RowBatchProcessor(DatabaseAccessMixin):
         Fetch candidates for all entities, with fuzzy retry for poor results.
         Now optimized to fetch only distinct mentions per batch.
         """
-        # Group entities by their fetch signature (value + fuzzy + qids)
-        fetch_groups = defaultdict(list)
+        fetch_groups = set()
         for entity in entities:
             qids_key = tuple(sorted(entity.correct_qids)) if entity.correct_qids else ()
             fetch_key = (entity.value, entity.fuzzy, qids_key)
-            fetch_groups[fetch_key].append(entity)
+            fetch_groups.add(fetch_key)
 
-        # Create unique fetch requests
         unique_entities = []
         unique_fuzzies = []
         unique_qids = []
-
-        for (value, fuzzy, qids_tuple), _ in fetch_groups.items():
+        for value, fuzzy, qids_tuple in fetch_groups:
             unique_entities.append(value)
             unique_fuzzies.append(fuzzy)
             unique_qids.append(list(qids_tuple))
@@ -144,29 +141,24 @@ class RowBatchProcessor(DatabaseAccessMixin):
             f"(from {len(entities)} total entities)"
         )
 
-        # Initial fetch with deduplicated requests
         initial_results = await self.candidate_fetcher.fetch_candidates_batch(
             entities=unique_entities,
             fuzzies=unique_fuzzies,
             qids=unique_qids,
         )
 
-        # Find entities needing fuzzy retry
-        retry_fetch_groups = defaultdict(list)
-        for (value, fuzzy, qids_tuple), entity_group in fetch_groups.items():
-            candidates = initial_results.get(value, [])
-            if self.fuzzy_retry and not fuzzy and len(candidates) < 1:
-                # Group retry entities by their retry signature
+        retry_fetch_groups = set()
+        for value, fuzzy, qids_tuple in fetch_groups:
+            retrieved_candidates = initial_results.get(value, [])
+            if self.fuzzy_retry and not fuzzy and len(retrieved_candidates) < 1:
                 retry_key = (value, True, qids_tuple)  # fuzzy=True for retry
-                retry_fetch_groups[retry_key].extend(entity_group)
+                retry_fetch_groups.add(retry_key)
 
-        # Perform fuzzy retry if needed (also deduplicated)
         if retry_fetch_groups:
             retry_entities = []
             retry_fuzzies = []
             retry_qids = []
-
-            for (value, fuzzy, qids_tuple), _ in retry_fetch_groups.items():
+            for value, fuzzy, qids_tuple in retry_fetch_groups:
                 retry_entities.append(value)
                 retry_fuzzies.append(fuzzy)
                 retry_qids.append(list(qids_tuple))
@@ -179,7 +171,6 @@ class RowBatchProcessor(DatabaseAccessMixin):
                 qids=retry_qids,
             )
 
-            # Update with retry results
             for value in retry_entities:
                 if value in retry_results:
                     initial_results[value] = retry_results[value]
@@ -227,7 +218,7 @@ class RowBatchProcessor(DatabaseAccessMixin):
                             entity_ids.add(cand.id)
 
                 # Process each entity in the row
-                self._compute_features(cell_value, row_value, mention_candidates)
+                self._compute_features(row_value, mention_candidates)
 
             # Enhance with additional features if possible
             if self.object_fetcher and self.literal_fetcher:
@@ -274,11 +265,11 @@ class RowBatchProcessor(DatabaseAccessMixin):
                     bulk_input[i : i + bulk_batch_size], ordered=False
                 )
 
-    def _compute_features(self, entity_value: str, row_value: str, candidates: List[Candidate]):
+    def _compute_features(self, row_value: str, candidates: List[Candidate]):
         """Process entities by computing features. Feature computation
         is done in-place over the candidates."""
 
-        self.feature.process_candidates(candidates, entity_value, row_value)
+        self.feature.process_candidates(candidates, row_value)
 
     async def _enhance_with_lamapi_features(
         self,

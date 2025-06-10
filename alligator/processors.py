@@ -1,4 +1,3 @@
-import hashlib
 import traceback
 from collections import defaultdict
 from typing import Any, Dict, List, Set
@@ -77,30 +76,22 @@ class RowBatchProcessor(DatabaseAccessMixin):
 
         for doc in docs:
             row = doc["data"]
-            for col_idx, value in enumerate(row):
-                row[col_idx] = clean_str(value)
+            cleaned_row = [clean_str(str(cell)) for cell in row]
             ne_columns = doc["classified_columns"].get("NE", {})
             lit_columns = doc["classified_columns"].get("LIT", {})
             context_columns = doc.get("context_columns", [])
             correct_qids = doc.get("correct_qids", {})
             row_index = doc.get("row_id")
 
-            # Build context text
-            context_text = " ".join(str(row[int(c)]) for c in sorted(context_columns, key=int))
-            normalized_text = " ".join(context_text.lower().split())
-            row_hash = hashlib.sha256(normalized_text.encode()).hexdigest()
-
             # Create row data
             row_data = RowData(
                 doc_id=doc["_id"],
-                row=row,
+                row=cleaned_row,
                 ne_columns=ne_columns,
                 lit_columns=lit_columns,
                 context_columns=context_columns,
                 correct_qids=correct_qids,
                 row_index=row_index,
-                context_text=context_text,
-                row_hash=row_hash,
             )
             row_data_list.append(row_data)
 
@@ -110,20 +101,15 @@ class RowBatchProcessor(DatabaseAccessMixin):
                 if not ColumnHelper.is_valid_index(normalized_col, len(row)):
                     continue
 
-                cell_value = row[ColumnHelper.to_int(normalized_col)]
-                # Skip empty or NA values
+                cell_value = cleaned_row[ColumnHelper.to_int(normalized_col)]
                 if not cell_value or pd.isna(cell_value):
                     continue
 
-                # Normalize value
                 qids = correct_qids.get(f"{row_index}-{normalized_col}", [])
-
-                # Create entity
                 entity = Entity(
                     value=cell_value,
                     row_index=row_index,
                     col_index=normalized_col,
-                    context_text=context_text,
                     correct_qids=qids,
                     fuzzy=False,
                 )
@@ -134,45 +120,71 @@ class RowBatchProcessor(DatabaseAccessMixin):
     async def _fetch_all_candidates(self, entities: List[Entity]) -> Dict[str, List[Candidate]]:
         """
         Fetch candidates for all entities, with fuzzy retry for poor results.
+        Now optimized to fetch only distinct mentions per batch.
         """
-        # Initial fetch
+        # Group entities by their fetch signature (value + fuzzy + qids)
+        fetch_groups = defaultdict(list)
+        for entity in entities:
+            qids_key = tuple(sorted(entity.correct_qids)) if entity.correct_qids else ()
+            fetch_key = (entity.value, entity.fuzzy, qids_key)
+            fetch_groups[fetch_key].append(entity)
+
+        # Create unique fetch requests
+        unique_entities = []
+        unique_fuzzies = []
+        unique_qids = []
+
+        for (value, fuzzy, qids_tuple), _ in fetch_groups.items():
+            unique_entities.append(value)
+            unique_fuzzies.append(fuzzy)
+            unique_qids.append(list(qids_tuple))
+
+        print(
+            f"Fetching candidates for {len(unique_entities)} distinct mentions "
+            f"(from {len(entities)} total entities)"
+        )
+
+        # Initial fetch with deduplicated requests
         initial_results = await self.candidate_fetcher.fetch_candidates_batch(
-            entities=[e.value for e in entities],
-            fuzzies=[e.fuzzy for e in entities],
-            qids=[e.correct_qids if e.correct_qids is not None else [] for e in entities],
+            entities=unique_entities,
+            fuzzies=unique_fuzzies,
+            qids=unique_qids,
         )
 
         # Find entities needing fuzzy retry
-        retry_entities: List[Entity] = []
-        for entity in entities:
-            candidates = initial_results.get(entity.value, [])
-            if self.fuzzy_retry and len(candidates) <= 1:
-                # Create a copy of the entity with fuzzy=True
-                retry_entity = Entity(
-                    value=entity.value,
-                    row_index=entity.row_index,
-                    col_index=entity.col_index,
-                    context_text=entity.context_text,
-                    correct_qids=entity.correct_qids,
-                    fuzzy=True,
-                )
-                retry_entities.append(retry_entity)
+        retry_fetch_groups = defaultdict(list)
+        for (value, fuzzy, qids_tuple), entity_group in fetch_groups.items():
+            candidates = initial_results.get(value, [])
+            if self.fuzzy_retry and not fuzzy and len(candidates) < 1:
+                # Group retry entities by their retry signature
+                retry_key = (value, True, qids_tuple)  # fuzzy=True for retry
+                retry_fetch_groups[retry_key].extend(entity_group)
 
-        # Perform fuzzy retry if needed
-        if retry_entities:
+        # Perform fuzzy retry if needed (also deduplicated)
+        if retry_fetch_groups:
+            retry_entities = []
+            retry_fuzzies = []
+            retry_qids = []
+
+            for (value, fuzzy, qids_tuple), _ in retry_fetch_groups.items():
+                retry_entities.append(value)
+                retry_fuzzies.append(fuzzy)
+                retry_qids.append(list(qids_tuple))
+
+            print(f"Performing fuzzy retry for {len(retry_entities)} distinct mentions")
+
             retry_results = await self.candidate_fetcher.fetch_candidates_batch(
-                entities=[e.value for e in retry_entities],
-                fuzzies=[e.fuzzy for e in retry_entities],
-                qids=[
-                    e.correct_qids if e.correct_qids is not None else [] for e in retry_entities
-                ],
+                entities=retry_entities,
+                fuzzies=retry_fuzzies,
+                qids=retry_qids,
             )
 
             # Update with retry results
-            for entity in retry_entities:
-                if entity.value in retry_results:
-                    initial_results[entity.value] = retry_results[entity.value]
+            for value in retry_entities:
+                if value in retry_results:
+                    initial_results[value] = retry_results[value]
 
+        # Convert to Candidate objects (reuse results for all entities with same mention)
         candidates: Dict[str, List[Candidate]] = defaultdict(list)
         for mention, candidates_list in initial_results.items():
             for candidate in candidates_list:
@@ -183,6 +195,7 @@ class RowBatchProcessor(DatabaseAccessMixin):
                     else:
                         candidate_dict[key] = value
                 candidates[mention].append(Candidate.from_dict(candidate_dict))
+
         return candidates
 
     async def _process_rows(
@@ -206,8 +219,7 @@ class RowBatchProcessor(DatabaseAccessMixin):
                 if not cell_value or pd.isna(cell_value):
                     continue
 
-                entity_value = clean_str(cell_value)
-                mention_candidates = candidates.get(entity_value, [])
+                mention_candidates = candidates.get(cell_value, [])
                 if mention_candidates:
                     candidates_by_col[normalized_col] = mention_candidates
                     for cand in mention_candidates:
@@ -215,7 +227,7 @@ class RowBatchProcessor(DatabaseAccessMixin):
                             entity_ids.add(cand.id)
 
                 # Process each entity in the row
-                self._compute_features(entity_value, row_value, mention_candidates)
+                self._compute_features(cell_value, row_value, mention_candidates)
 
             # Enhance with additional features if possible
             if self.object_fetcher and self.literal_fetcher:

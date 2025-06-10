@@ -60,7 +60,7 @@ class Alligator(DatabaseAccessMixin):
         save_output: bool = True,
         save_output_to_csv: bool = True,
         correct_qids: Dict[str, str | List[str]] | None = None,
-        http_session_limit: int = 50,
+        http_session_limit: int = 32,
         http_session_ssl_verify: bool = False,
         **kwargs,
     ) -> None:

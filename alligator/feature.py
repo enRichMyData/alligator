@@ -75,14 +75,11 @@ class Feature(DatabaseAccessMixin):
         }
         return mapping.get(kind, 1)
 
-    def process_candidates(
-        self, candidates: List[Candidate], entity_name: Optional[str], row: Optional[str]
-    ) -> None:
+    def process_candidates(self, candidates: List[Candidate], row: Optional[str]) -> None:
         """
         Process candidate records to calculate a set of features for each candidate.
         """
         # Use a safe version of entity_name for computations.
-        safe_entity_name: str = entity_name if entity_name is not None else ""
         safe_row = row if row is not None else ""
         safe_row = clean_str(safe_row)
 
@@ -111,48 +108,11 @@ class Feature(DatabaseAccessMixin):
 
             # Initialize all default features with default values
             candidate_features: Dict[str, Any] = candidate.features
-            features: Dict[str, Any] = {feature: 0.0 for feature in DEFAULT_FEATURES}
-
-            # Now set the calculated values in the same order as DEFAULT_FEATURES
-            features.update(
-                {
-                    "ambiguity_mention": candidate_features.get("ambiguity_mention", 0.0),
-                    "corrects_tokens": candidate_features.get("corrects_tokens", 0.0),
-                    "ntoken_mention": candidate_features.get(
-                        "ntoken_mention", len(safe_entity_name.split())
-                    ),
-                    "ntoken_entity": candidate_features.get(
-                        "ntoken_entity", len(safe_candidate_name.split())
-                    ),
-                    "length_mention": len(safe_entity_name),
-                    "length_entity": len(safe_candidate_name),
-                    "popularity": candidate_features.get("popularity", 0.0),
-                    "pos_score": candidate_features.get("pos_score", 0.0),
-                    "es_score": candidate_features.get("es_score", 0.0),
-                    "ed_score": candidate_features.get("ed_score", 0.0),
-                    "jaccard_score": candidate_features.get("jaccard_score", 0.0),
-                    "jaccardNgram_score": candidate_features.get("jaccardNgram_score", 0.0),
-                    "p_subj_ne": candidate_features.get("p_subj_ne", 0.0),
-                    "p_subj_lit_datatype": candidate_features.get("p_subj_lit_datatype", 0.0),
-                    "p_subj_lit_all_datatype": candidate_features.get(
-                        "p_subj_lit_all_datatype", 0.0
-                    ),
-                    "p_subj_lit_row": candidate_features.get("p_subj_lit_row", 0.0),
-                    "p_obj_ne": candidate_features.get("p_obj_ne", 0.0),
-                    "desc": desc,
-                    "descNgram": descNgram,
-                    "cta_t1": candidate_features.get("cta_t1", 0.0),
-                    "cta_t2": candidate_features.get("cta_t2", 0.0),
-                    "cta_t3": candidate_features.get("cta_t3", 0.0),
-                    "cta_t4": candidate_features.get("cta_t4", 0.0),
-                    "cta_t5": candidate_features.get("cta_t5", 0.0),
-                    "cpa_t1": candidate_features.get("cpa_t1", 0.0),
-                    "cpa_t2": candidate_features.get("cpa_t2", 0.0),
-                    "cpa_t3": candidate_features.get("cpa_t3", 0.0),
-                    "cpa_t4": candidate_features.get("cpa_t4", 0.0),
-                    "cpa_t5": candidate_features.get("cpa_t5", 0.0),
-                }
-            )
+            features: Dict[str, Any] = {
+                feature: candidate_features.get(feature, 0.0) for feature in DEFAULT_FEATURES
+            }
+            features["desc"] = desc
+            features["descNgram"] = descNgram
 
             # Preserve the original candidate values, even if they are None
             candidate.features = features

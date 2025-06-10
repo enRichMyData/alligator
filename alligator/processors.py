@@ -218,7 +218,7 @@ class RowBatchProcessor(DatabaseAccessMixin):
                             entity_ids.add(cand.id)
 
                 # Process each entity in the row
-                self._compute_features(cell_value, row_value, mention_candidates)
+                self._compute_features(row_value, mention_candidates)
 
             # Enhance with additional features if possible
             if self.object_fetcher and self.literal_fetcher:
@@ -265,11 +265,11 @@ class RowBatchProcessor(DatabaseAccessMixin):
                     bulk_input[i : i + bulk_batch_size], ordered=False
                 )
 
-    def _compute_features(self, entity_value: str, row_value: str, candidates: List[Candidate]):
+    def _compute_features(self, row_value: str, candidates: List[Candidate]):
         """Process entities by computing features. Feature computation
         is done in-place over the candidates."""
 
-        self.feature.process_candidates(candidates, entity_value, row_value)
+        self.feature.process_candidates(candidates, row_value)
 
     async def _enhance_with_lamapi_features(
         self,

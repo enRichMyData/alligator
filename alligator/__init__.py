@@ -11,7 +11,7 @@ from nltk.corpus import stopwords
 # Load environment variables from .env file
 load_dotenv()
 
-TIMEOUT = aiohttp.ClientTimeout(
+MY_TIMEOUT = aiohttp.ClientTimeout(
     total=30,  # Total time for the request
     connect=5,  # Time to connect to the server
     sock_connect=5,  # Time to wait for a free socket

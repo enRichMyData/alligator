@@ -27,6 +27,7 @@ class Entity:
     value: str
     row_index: Optional[int]
     col_index: str  # Stored as string for consistency
+    context_text: str
     correct_qids: Optional[List[str]] = None
     fuzzy: bool = False
 
@@ -42,6 +43,8 @@ class RowData:
     context_columns: List[str]
     correct_qids: Dict[str, List[str]]
     row_index: Optional[int]
+    context_text: str
+    row_hash: str
 
 
 @dataclass

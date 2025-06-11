@@ -26,7 +26,7 @@ class Alligator(DatabaseAccessMixin):
     Alligator entity linking system with hidden MongoDB configuration.
     """
 
-    _DEFAULT_MONGO_URI = "mongodb://gator-mongodb:27017/"  # Change this to a class-level default
+    _DEFAULT_MONGO_URI = "mongodb://gator-mongodb:27017/"
     _DB_NAME = "alligator_db"
     _INPUT_COLLECTION = "input_data"
     _ERROR_LOG_COLLECTION = "error_logs"
@@ -401,22 +401,13 @@ class Alligator(DatabaseAccessMixin):
         )
 
     def save_output(self):
-        """Retrieves processed documents from MongoDB using memory-efficient streaming.
+        """Memory-efficient output processing with better streaming."""
+        input_collection = self.get_db()[self._INPUT_COLLECTION]
 
-        For large tables, this avoids loading all results into memory at once.
-        Instead, it processes documents in batches and writes directly to CSV.
-        """
-        db = self.get_db()
-        input_collection = db[self._INPUT_COLLECTION]
-
-        # Determine if we need to write to CSV or return full results
-        stream_to_csv = self._save_output_to_csv and isinstance(self.output_csv, (str, Path))
-
-        # Get header information
         header = None
         if isinstance(self.input_csv, pd.DataFrame):
             header = self.input_csv.columns.tolist()
-        elif isinstance(self.input_csv, str):
+        elif isinstance(self.input_csv, (str, Path)):
             header = pd.read_csv(self.input_csv, nrows=0).columns.tolist()
 
         # Get first document to determine column count if header is still None
@@ -431,62 +422,31 @@ class Alligator(DatabaseAccessMixin):
             print("Could not extract header from input table, using generic column names.")
             header = [f"col_{i}" for i in range(len(sample_doc["data"]))]
 
-        # Process in batches with cursor
-        batch_size = 1024  # Process 1024 documents at a time
+        def document_generator():
+            cursor = input_collection.find(
+                {"dataset_name": self.dataset_name, "table_name": self.table_name},
+                projection={"data": 1, "cea": 1, "classified_columns.NE": 1},
+            ).batch_size(512)
+            for doc in cursor:
+                yield self._extract_row_data(doc, header)
 
-        # Only fetch fields we actually need to reduce network transfer
-        projection = {"data": 1, "el_results": 1, "classified_columns.NE": 1}
-        cursor = input_collection.find(
-            {"dataset_name": self.dataset_name, "table_name": self.table_name},
-            projection=projection,
-        ).batch_size(batch_size)
+        # Write directly to CSV without storing in memory
+        if self._save_output_to_csv and isinstance(self.output_csv, (str, Path)):
+            first_row = True
+            with open(self.output_csv, "w", newline="", encoding="utf-8") as csvfile:
+                writer = None
+                for row_data in document_generator():
+                    if first_row:
+                        import csv
 
-        # Count documents if streaming to CSV for progress reporting
-        if stream_to_csv:
-            total_docs = input_collection.count_documents(
-                {"dataset_name": self.dataset_name, "table_name": self.table_name}
-            )
-            print(f"Streaming {total_docs} documents to CSV...")
+                        writer = csv.DictWriter(csvfile, fieldnames=row_data.keys())
+                        writer.writeheader()
+                        first_row = False
 
-        # Setup for handling results
-        all_rows = [] if not stream_to_csv else None
-        current_chunk = []
-        processed_count = 0
-        chunk_size = 256  # Size for chunked CSV writing
-
-        # Process all documents
-        for doc in cursor:
-            # Process each document - this is the common code between both paths
-            row_data = self._extract_row_data(doc, header)
-
-            if stream_to_csv:
-                # For CSV streaming, collect into chunk
-                current_chunk.append(row_data)
-                processed_count += 1
-
-                # Write chunk when it reaches desired size
-                if len(current_chunk) >= chunk_size:
-                    self._write_csv_chunk(current_chunk, processed_count, chunk_size, total_docs)
-                    current_chunk = []
-            else:
-                # For memory collection, just append to results
-                all_rows.append(row_data)
-                processed_count += 1
-
-                # Report progress periodically
-                if processed_count % batch_size == 0:
-                    print(f"Processed {processed_count} rows...")
-
-        # Handle any remaining rows for CSV streaming
-        if stream_to_csv and current_chunk:
-            self._write_csv_chunk(current_chunk, processed_count, chunk_size, total_docs)
-            print(f"Results saved to '{self.output_csv}'. Total rows: {processed_count}")
-            return []
-        elif not stream_to_csv:
-            print(f"Retrieved {processed_count} rows total")
-            return all_rows
+                    writer.writerow(row_data)
+            return [{}]
         else:
-            return []
+            return list(document_generator())
 
     def _extract_row_data(self, doc, header):
         """Extract row data from a MongoDB document.
@@ -495,7 +455,7 @@ class Alligator(DatabaseAccessMixin):
         """
         # Create base row data with original values
         row_data = dict(zip(header, doc["data"]))
-        el_results = doc.get("el_results", {})
+        el_results = doc.get("cea", {})
 
         # Add entity linking results
         for col_idx, col_type in doc["classified_columns"].get("NE", {}).items():
@@ -516,25 +476,6 @@ class Alligator(DatabaseAccessMixin):
             row_data[score_field] = candidate.get("score", 0)
 
         return row_data
-
-    def _write_csv_chunk(self, chunk, processed_count, chunk_size, total_docs):
-        """Write a chunk of data to CSV.
-
-        Encapsulates the CSV writing logic.
-        """
-        # Create DataFrame and append to CSV
-        chunk_df = pd.DataFrame(chunk)
-
-        # Use mode='a' (append) for all chunks after the first
-        mode = "w" if processed_count <= len(chunk) else "a"
-        # Only include header for the first chunk
-        header_option = True if processed_count <= len(chunk) else False
-
-        # Write chunk to CSV
-        chunk_df.to_csv(self.output_csv, index=False, mode=mode, header=header_option)
-
-        # Report progress
-        print(f"Processed {processed_count}/{total_docs} rows...")
 
     def ml_worker(
         self,
@@ -601,6 +542,10 @@ class Alligator(DatabaseAccessMixin):
         else:
             batch_size = docs_per_worker
             skip = (remainder * (docs_per_worker + 1)) + ((rank - remainder) * docs_per_worker)
+        if batch_size <= 0:
+            print(f"Worker {rank} has no documents to process (batch size is {batch_size}).")
+            await session.close()
+            return
         print(f"Worker {rank} started with batch size {batch_size}, skipping {skip}.")
 
         # Find documents to process for this worker using skip/limit
@@ -635,7 +580,7 @@ class Alligator(DatabaseAccessMixin):
     def worker(self, rank: int):
         asyncio.run(self.worker_async(rank))
 
-    def run(self):
+    def run(self) -> List[Dict[str, Any]]:
         db = self.get_db()
         input_collection = db[self._INPUT_COLLECTION]
 
@@ -693,5 +638,5 @@ class Alligator(DatabaseAccessMixin):
         if self._save_output:
             extracted_rows = self.save_output()
         else:
-            extracted_rows = []
+            extracted_rows = [{}]
         return extracted_rows

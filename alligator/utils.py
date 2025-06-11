@@ -113,18 +113,17 @@ def parse_date(str_date):
 
 def perc_diff(v1, v2):
     diff = 1 - (abs(v1 - v2) / max(abs(v1), abs(v2), 1))
-    diff = round(diff, 4)
     return diff
 
 
-def word2ngrams(text, n=None):
+def word2ngrams(text, n: int | None = None):
     """Convert word into character ngrams."""
     if n is None:
         n = len(text)
     return [text[i : i + n] for i in range(len(text) - n + 1)]
 
 
-def get_ngrams(text, n=3):
+def get_ngrams(text, n: int | None = 3):
     ngrams = set()
     for token in text.split(" "):
         temp = word2ngrams(token, n)
@@ -167,12 +166,11 @@ def _my_abs(value1, value2):
 @lru_cache(maxsize=10000)
 def compute_similarty_between_numbers(value1: str, value2: str) -> float:
     try:
-        value1 = float(value1)
-        value2 = float(value2)
-        score = _my_abs(value1, value2)
+        value1_float = float(value1)
+        value2_float = float(value2)
+        score = _my_abs(value1_float, value2_float)
     except Exception:
         score = 0
-
     return score
 
 

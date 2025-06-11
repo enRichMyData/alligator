@@ -67,6 +67,10 @@ class Alligator(DatabaseAccessMixin):
         # Checks
         if input_csv is None:
             raise ValueError("Input CSV or DataFrame must be provided.")
+        elif not isinstance(input_csv, (str, Path, pd.DataFrame)):
+            raise ValueError("Input must be a file path (str or Path) or a pandas DataFrame.")
+        elif isinstance(input_csv, (str, Path)) and not os.path.exists(input_csv):
+            raise FileNotFoundError(f"Input file '{input_csv}' does not exist.")
         self.input_csv = input_csv
         self.output_csv = output_csv
         if save_output and self.output_csv is None and save_output_to_csv:

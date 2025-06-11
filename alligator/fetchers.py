@@ -168,8 +168,8 @@ class CandidateFetcher(DatabaseAccessMixin):
         to_fetch = []
 
         # Decide which entities need to be fetched
-        for entity_name, fuzzy, qids in zip(entities, fuzzies, qids):
-            qid_str = " ".join(qids) if qids else ""
+        for entity_name, fuzzy, entity_qids in zip(entities, fuzzies, qids):
+            qid_str = " ".join(entity_qids) if qids else ""
 
             if cache := self.get_candidate_cache():
                 cache_key = get_cache_key(

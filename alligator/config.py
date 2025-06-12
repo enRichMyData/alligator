@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional, Union
 import pandas as pd
 
 from alligator import PROJECT_ROOT
-from alligator.typing import ColType
+from alligator.types import ColType
 
 
 @dataclass

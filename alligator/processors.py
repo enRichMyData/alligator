@@ -10,7 +10,7 @@ from alligator.feature import Feature
 from alligator.fetchers import CandidateFetcher, LiteralFetcher, ObjectFetcher
 from alligator.logging import get_logger
 from alligator.mongo import MongoWrapper
-from alligator.typing import Candidate, Entity, RowData
+from alligator.types import Candidate, Entity, RowData
 from alligator.utils import ColumnHelper, clean_str
 
 

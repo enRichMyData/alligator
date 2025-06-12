@@ -5,7 +5,7 @@ import pandas as pd
 
 from alligator.database import DatabaseAccessMixin
 from alligator.logging import get_logger
-from alligator.typing import Candidate, LiteralsData, ObjectsData
+from alligator.types import Candidate, LiteralsData, ObjectsData
 from alligator.utils import (
     ColumnHelper,
     clean_str,

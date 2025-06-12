@@ -17,7 +17,7 @@ from alligator.config import AlligatorConfig
 from alligator.coordinator import AlligatorCoordinator
 from alligator.fetchers import CandidateFetcher, LiteralFetcher, ObjectFetcher
 from alligator.processors import RowBatchProcessor
-from alligator.typing import ColType
+from alligator.types import ColType
 
 
 class Alligator:

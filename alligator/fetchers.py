@@ -11,7 +11,7 @@ import aiohttp
 from alligator.database import DatabaseAccessMixin
 from alligator.feature import Feature
 from alligator.mongo import MongoCache, MongoWrapper
-from alligator.typing import LiteralsData, ObjectsData
+from alligator.types import LiteralsData, ObjectsData
 
 
 @lru_cache(maxsize=int(2**31) - 1)

@@ -6,6 +6,7 @@ from column_classifier import ColumnClassifier
 
 from alligator.config import AlligatorConfig
 from alligator.database import DatabaseAccessMixin
+from alligator.logging import get_logger
 from alligator.mongo import MongoWrapper
 
 
@@ -14,6 +15,7 @@ class DataManager(DatabaseAccessMixin):
 
     def __init__(self, config: AlligatorConfig):
         self.config = config
+        self.logger = get_logger("data_manager")
         self._mongo_uri = config.database.mongo_uri or "mongodb://gator-mongodb:27017/"
         self._db_name = config.database.db_name or "alligator_db"
         self.mongo_wrapper = MongoWrapper(
@@ -45,11 +47,15 @@ class DataManager(DatabaseAccessMixin):
         else:
             if self.config.data.input_csv is None:
                 raise ValueError("Input CSV path cannot be None")
-            sample = pd.read_csv(self.config.data.input_csv, nrows=32)
+            # Ensure we have a string path for pandas
+            csv_path = str(self.config.data.input_csv)
+            sample = pd.read_csv(csv_path, nrows=32)
             total_rows = -1
             is_csv_path = True
 
-        print(f"Onboarding {total_rows} rows for dataset '{dataset_name}', table '{table_name}'")
+        self.logger.info(
+            f"Onboarding {total_rows} rows for dataset '{dataset_name}', table '{table_name}'"
+        )
 
         # Step 2: Perform column classification
         classified_columns = self._classify_columns(sample)
@@ -72,7 +78,7 @@ class DataManager(DatabaseAccessMixin):
         )
 
         total_time = time.perf_counter() - start_time
-        print(
+        self.logger.info(
             f"Data onboarding complete for dataset '{dataset_name}' "
             f"and table '{table_name}' - {processed_rows} rows in {total_time:.1f}s"
         )
@@ -146,8 +152,11 @@ class DataManager(DatabaseAccessMixin):
         """Generator that yields chunks of rows, handling both DF and CSV."""
         if self.config.data.dry_run:
             if is_csv_path:
-                if self.config.data.input_csv is not None:
-                    yield pd.read_csv(self.config.data.input_csv, nrows=1), 0
+                if self.config.data.input_csv is not None and not isinstance(
+                    self.config.data.input_csv, pd.DataFrame
+                ):
+                    csv_path = str(self.config.data.input_csv)
+                    yield pd.read_csv(csv_path, nrows=1), 0
             else:
                 if isinstance(self.config.data.input_csv, pd.DataFrame):
                     yield self.config.data.input_csv.iloc[:1], 0
@@ -155,8 +164,11 @@ class DataManager(DatabaseAccessMixin):
             if is_csv_path:
                 chunk_size = 2048
                 row_count = 0
-                if self.config.data.input_csv is not None:
-                    for chunk in pd.read_csv(self.config.data.input_csv, chunksize=chunk_size):
+                if self.config.data.input_csv is not None and not isinstance(
+                    self.config.data.input_csv, pd.DataFrame
+                ):
+                    csv_path = str(self.config.data.input_csv)
+                    for chunk in pd.read_csv(csv_path, chunksize=chunk_size):
                         yield chunk, row_count
                         row_count += len(chunk)
             else:
@@ -235,7 +247,7 @@ class DataManager(DatabaseAccessMixin):
                     rows_per_second = processed_rows / elapsed if elapsed > 0 else 0
 
                     if is_csv_path:
-                        print(
+                        self.logger.info(
                             f"Chunk {chunk_idx}: Processed {chunk_size} rows "
                             f"(total: {processed_rows}) ({rows_per_second:.1f} rows/sec)"
                         )
@@ -243,13 +255,13 @@ class DataManager(DatabaseAccessMixin):
                         chunk_start = start_idx + 1
                         chunk_end = start_idx + chunk_size
                         total_chunks = (total_rows + chunk_size - 1) // chunk_size
-                        print(
+                        self.logger.info(
                             f"Chunk {chunk_idx}/{total_chunks}: "
                             f"Onboarded rows {chunk_start}-{chunk_end} "
                             f"({rows_per_second:.1f} rows/sec)"
                         )
                 except Exception as e:
-                    print(f"Error inserting batch {chunk_idx}: {str(e)}")
+                    self.logger.error(f"Error inserting batch {chunk_idx}: {str(e)}")
                     if "duplicate key" not in str(e).lower():
                         raise
 

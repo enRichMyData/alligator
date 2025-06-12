@@ -4,6 +4,7 @@ from typing import Tuple
 
 from alligator.config import AlligatorConfig
 from alligator.feature import Feature
+from alligator.logging import get_logger
 from alligator.ml import MLWorker
 
 
@@ -12,6 +13,7 @@ class MLManager:
 
     def __init__(self, config: AlligatorConfig):
         self.config = config
+        self.logger = get_logger("ml_manager")
 
     def run_ml_pipeline(self, feature: Feature) -> None:
         """Run the complete ML pipeline with ranking and reranking stages."""
@@ -26,10 +28,10 @@ class MLManager:
                 global_frequencies=(None, None, None),
             )
             pool.map(rank_stage_partial_func, range(self.config.ml.num_ml_workers))
-            print("ML Rank stage complete.")
+            self.logger.info("ML Rank stage complete.")
 
             # Compute global frequencies (this happens in the main process)
-            print("Computing global frequencies...")
+            self.logger.info("Computing global frequencies...")
             (
                 type_frequencies,
                 predicate_frequencies,
@@ -38,7 +40,7 @@ class MLManager:
                 docs_to_process=self.config.feature.doc_percentage_type_features,
                 random_sample=False,
             )
-            print("Global frequencies computed.")
+            self.logger.info("Global frequencies computed.")
 
             # Second ML ranking stage with global frequencies
             rerank_stage_partial_func = partial(
@@ -51,7 +53,7 @@ class MLManager:
                 ),
             )
             pool.map(rerank_stage_partial_func, range(self.config.ml.num_ml_workers))
-            print("ML Rerank stage complete.")
+            self.logger.info("ML Rerank stage complete.")
 
         finally:
             pool.close()

@@ -9,6 +9,7 @@ from alligator.config import AlligatorConfig
 from alligator.database import DatabaseAccessMixin
 from alligator.feature import Feature
 from alligator.fetchers import CandidateFetcher, LiteralFetcher, ObjectFetcher
+from alligator.logging import get_logger
 from alligator.mongo import MongoWrapper
 from alligator.processors import RowBatchProcessor
 
@@ -18,6 +19,7 @@ class WorkerManager(DatabaseAccessMixin):
 
     def __init__(self, config: AlligatorConfig):
         self.config = config
+        self.logger = get_logger("worker_manager")
         self._mongo_uri = config.database.mongo_uri or "mongodb://gator-mongodb:27017/"
         self._db_name = config.database.db_name or "alligator_db"
 
@@ -28,7 +30,7 @@ class WorkerManager(DatabaseAccessMixin):
             ssl=self.config.retrieval.http_session_ssl_verify,
         )
         session = aiohttp.ClientSession(connector=connector, timeout=TIMEOUT)
-        print(
+        self.logger.info(
             f"Created HTTP session with limit {self.config.retrieval.http_session_limit} "
             f"and SSL verify {self.config.retrieval.http_session_ssl_verify}."
         )
@@ -106,7 +108,7 @@ class WorkerManager(DatabaseAccessMixin):
         )
 
         total_rows = mongo_wrapper.count_documents(input_collection, {"status": "TODO"})
-        print(f"Found {total_rows} tasks to process.")
+        self.logger.info(f"Found {total_rows} tasks to process.")
 
         num_workers = self.config.worker.num_workers or 1
         processes = []
@@ -125,7 +127,7 @@ class WorkerManager(DatabaseAccessMixin):
 
     async def _worker_async(self, rank: int, feature: Feature):
         """Async worker process implementation."""
-        print(f"Worker {rank} started.")
+        self.logger.info(f"Worker {rank} started.")
         db = self.get_db()
         input_collection = db[self.config.database.input_collection]
 
@@ -143,8 +145,9 @@ class WorkerManager(DatabaseAccessMixin):
                 "table_name": self.config.data.table_name,
             }
         )
-        docs_per_worker = total_docs // self.config.worker.num_workers
-        remainder = total_docs % self.config.worker.num_workers
+        num_workers = self.config.worker.num_workers or 1
+        docs_per_worker = total_docs // num_workers
+        remainder = total_docs % num_workers
 
         # Adjust batch size for this specific worker
         # Give extra documents to earlier workers if not evenly divisible
@@ -155,10 +158,12 @@ class WorkerManager(DatabaseAccessMixin):
             batch_size = docs_per_worker
             skip = (remainder * (docs_per_worker + 1)) + ((rank - remainder) * docs_per_worker)
         if batch_size <= 0:
-            print(f"Worker {rank} has no documents to process (batch size is {batch_size}).")
+            self.logger.warning(
+                f"Worker {rank} has no documents to process (batch size is {batch_size})."
+            )
             await session.close()
             return
-        print(f"Worker {rank} started with batch size {batch_size}, skipping {skip}.")
+        self.logger.info(f"Worker {rank} started with batch size {batch_size}, skipping {skip}.")
 
         # Find documents to process for this worker using skip/limit
         cursor = (
@@ -178,14 +183,16 @@ class WorkerManager(DatabaseAccessMixin):
             if len(todo_docs) < self.config.worker.worker_batch_size:
                 todo_docs.append(doc)
             else:
-                print(f"Worker {rank} processing batch of {len(todo_docs)} documents.")
+                self.logger.info(f"Worker {rank} processing batch of {len(todo_docs)} documents.")
                 await self._process_batch(todo_docs, row_processor)
-                print(f"Worker {rank} processed {len(todo_docs)} documents.")
+                self.logger.info(f"Worker {rank} processed {len(todo_docs)} documents.")
                 todo_docs = [doc]
         if todo_docs:
-            print(f"Worker {rank} processing final batch of {len(todo_docs)} documents.")
+            self.logger.info(
+                f"Worker {rank} processing final batch of {len(todo_docs)} documents."
+            )
             await self._process_batch(todo_docs, row_processor)
-            print(f"Worker {rank} finished processing documents.")
+            self.logger.info(f"Worker {rank} finished processing documents.")
 
         await session.close()
 

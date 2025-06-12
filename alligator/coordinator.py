@@ -9,6 +9,7 @@ from typing import Any, Dict, List
 
 from alligator.config import AlligatorConfig
 from alligator.feature import Feature
+from alligator.logging import get_logger
 from alligator.manager import DataManager, MLManager, OutputManager, WorkerManager
 
 
@@ -22,6 +23,7 @@ class AlligatorCoordinator:
 
     def __init__(self, config: AlligatorConfig):
         self.config = config
+        self.logger = get_logger("coordinator")
 
         # Initialize managers
         self.data_manager = DataManager(config)
@@ -47,25 +49,25 @@ class AlligatorCoordinator:
 
     def run(self) -> List[Dict[str, Any]]:
         """Execute the complete entity linking pipeline."""
-        print("Starting Alligator entity linking pipeline...")
+        self.logger.info("Starting Alligator entity linking pipeline...")
 
         # Step 1: Data onboarding
-        print("Step 1: Data onboarding...")
+        self.logger.info("Step 1: Data onboarding...")
         self.data_manager.onboard_data()
 
         # Step 2: Worker-based processing
-        print("Step 2: Running workers for candidate retrieval and processing...")
+        self.logger.info("Step 2: Running workers for candidate retrieval and processing...")
         self.worker_manager.run_workers(self.feature)
 
         # Step 3: ML pipeline
-        print("Step 3: Running ML pipeline...")
+        self.logger.info("Step 3: Running ML pipeline...")
         self.ml_manager.run_ml_pipeline(self.feature)
 
         # Step 4: Output generation
-        print("Step 4: Generating output...")
+        self.logger.info("Step 4: Generating output...")
         extracted_rows = self.output_manager.save_output()
 
-        print("Alligator entity linking pipeline completed successfully!")
+        self.logger.info("Alligator entity linking pipeline completed successfully!")
         return extracted_rows
 
     def close_connections(self):
@@ -76,4 +78,4 @@ class AlligatorCoordinator:
             MongoConnectionManager.close_connection()
         except Exception:
             pass
-        print("Connections closed.")
+        self.logger.info("Connections closed.")

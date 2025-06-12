@@ -5,6 +5,7 @@ import pandas as pd
 
 from alligator.config import AlligatorConfig
 from alligator.database import DatabaseAccessMixin
+from alligator.logging import get_logger
 
 
 class OutputManager(DatabaseAccessMixin):
@@ -12,6 +13,7 @@ class OutputManager(DatabaseAccessMixin):
 
     def __init__(self, config: AlligatorConfig):
         self.config = config
+        self.logger = get_logger("output_manager")
         self._mongo_uri = config.database.mongo_uri or "mongodb://gator-mongodb:27017/"
         self._db_name = config.database.db_name or "alligator_db"
 
@@ -20,7 +22,7 @@ class OutputManager(DatabaseAccessMixin):
         if not self.config.data.save_output:
             return [{}]
 
-        print("Saving output...")
+        self.logger.info("Saving output...")
         db = self.get_db()
         input_collection = db[self.config.database.input_collection]
 
@@ -38,11 +40,13 @@ class OutputManager(DatabaseAccessMixin):
             {"dataset_name": dataset_name, "table_name": table_name}
         )
         if not sample_doc:
-            print("No documents found for the specified dataset and table.")
+            self.logger.warning("No documents found for the specified dataset and table.")
             return []
 
         if header is None:
-            print("Could not extract header from input table, using generic column names.")
+            self.logger.warning(
+                "Could not extract header from input table, using generic column names."
+            )
             header = [f"col_{i}" for i in range(len(sample_doc["data"]))]
 
         # Write directly to CSV without storing in memory
@@ -50,8 +54,8 @@ class OutputManager(DatabaseAccessMixin):
             self.config.data.output_csv, (str, Path)
         ):
             first_row = True
+            writer = None
             with open(self.config.data.output_csv, "w", newline="", encoding="utf-8") as csvfile:
-                writer = None
                 for row_data in self.document_generator(header):
                     if first_row:
                         import csv
@@ -60,7 +64,8 @@ class OutputManager(DatabaseAccessMixin):
                         writer.writeheader()
                         first_row = False
 
-                    writer.writerow(row_data)
+                    if writer is not None:
+                        writer.writerow(row_data)
             return [{}]
         else:
             return list(self.document_generator(header))

@@ -5,8 +5,10 @@ from dotenv import load_dotenv
 from jsonargparse import ArgumentParser
 
 from alligator import Alligator
+from alligator.logging import get_logger
 
 load_dotenv()
+logger = get_logger("cli")
 
 
 def main():
@@ -20,12 +22,12 @@ def main():
     )
     args = parser.parse_args()
 
-    print("🚀 Starting the entity linking process...")
+    logger.info("🚀 Starting the entity linking process...")
     tic = time.perf_counter()
     gator = Alligator(**args.gator)
     gator.run()
     toc = time.perf_counter()
-    print(f"✅ Entity linking process completed in {toc - tic:0.4f} seconds.")
+    logger.info(f"✅ Entity linking process completed in {toc - tic:0.4f} seconds.")
 
 
 if __name__ == "__main__":

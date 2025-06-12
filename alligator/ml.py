@@ -10,7 +10,7 @@ from pymongo.operations import UpdateOne
 from alligator import PROJECT_ROOT
 from alligator.database import DatabaseAccessMixin
 from alligator.feature import DEFAULT_FEATURES
-from alligator.logging import get_logger
+from alligator.log import get_logger
 from alligator.mongo import MongoWrapper
 from alligator.utils import keys_with_max_count
 

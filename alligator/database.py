@@ -3,7 +3,7 @@ from typing import Dict
 from pymongo import MongoClient
 from pymongo.database import Database
 
-from alligator.logging import get_logger
+from alligator.log import get_logger
 
 
 class DatabaseAccessMixin:

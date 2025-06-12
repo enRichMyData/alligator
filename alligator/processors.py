@@ -8,7 +8,7 @@ from pymongo import UpdateOne
 from alligator.database import DatabaseAccessMixin
 from alligator.feature import Feature
 from alligator.fetchers import CandidateFetcher, LiteralFetcher, ObjectFetcher
-from alligator.logging import get_logger
+from alligator.log import get_logger
 from alligator.mongo import MongoWrapper
 from alligator.types import Candidate, Entity, RowData
 from alligator.utils import ColumnHelper, clean_str

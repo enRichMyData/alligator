@@ -5,7 +5,7 @@ import pandas as pd
 
 from alligator.config import AlligatorConfig
 from alligator.database import DatabaseAccessMixin
-from alligator.logging import get_logger
+from alligator.log import get_logger
 
 
 class OutputManager(DatabaseAccessMixin):

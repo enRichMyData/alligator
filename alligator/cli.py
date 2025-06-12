@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from jsonargparse import ArgumentParser
 
 from alligator import Alligator
-from alligator.logging import get_logger
+from alligator.log import get_logger
 
 load_dotenv()
 logger = get_logger("cli")

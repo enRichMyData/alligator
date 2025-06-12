@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 
 from alligator.config import AlligatorConfig
 from alligator.feature import Feature
-from alligator.logging import get_logger
+from alligator.log import get_logger
 from alligator.manager import DataManager, MLManager, OutputManager, WorkerManager
 
 

@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 
 from alligator.database import DatabaseAccessMixin
-from alligator.logging import get_logger
+from alligator.log import get_logger
 from alligator.types import Candidate, LiteralsData, ObjectsData
 from alligator.utils import (
     ColumnHelper,

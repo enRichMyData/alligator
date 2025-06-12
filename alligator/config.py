@@ -32,7 +32,6 @@ class DataConfig:
     save_output_to_csv: bool = True
     correct_qids: Dict[str, Union[str, List[str]]] = field(default_factory=dict)
     dry_run: bool = False
-    testing_mode: bool = False  # New field for testing
 
     def __post_init__(self):
         """Validate and process data configuration after initialization."""
@@ -253,8 +252,6 @@ class AlligatorConfig:
         # Database configuration
         mongo_uri: Optional[str] = None,
         db_name: Optional[str] = None,
-        # Testing configuration
-        testing_mode: bool = False,
         # Additional keyword arguments for future extensibility
         **kwargs,
     ):
@@ -272,7 +269,6 @@ class AlligatorConfig:
             save_output_to_csv=save_output_to_csv,
             correct_qids=correct_qids or {},
             dry_run=dry_run,
-            testing_mode=testing_mode,
         )
 
         self.worker = WorkerConfig(

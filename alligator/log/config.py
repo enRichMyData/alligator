@@ -8,7 +8,98 @@ and appropriate log levels for different components.
 import logging
 import os
 import sys
+from enum import IntEnum
 from typing import Optional
+
+
+class LogLevel(IntEnum):
+    """Log levels that can be set by users via environment variables."""
+
+    DEBUG = logging.DEBUG
+    INFO = logging.INFO
+    WARNING = logging.WARNING
+    ERROR = logging.ERROR
+    CRITICAL = logging.CRITICAL
+
+
+class ConditionalLogger(logging.Logger):
+    """A logger subclass that respects user-configurable minimum log level."""
+
+    def __init__(self, name: str):
+        super().__init__(name)
+        self._user_min_level = self._get_user_min_level()
+
+        # Inherit configuration from root logger if it has handlers
+        root_logger = logging.getLogger()
+        if root_logger.handlers and not self.handlers:
+            # Copy handlers from root logger
+            for handler in root_logger.handlers:
+                self.addHandler(handler)
+            # Set the logger level to match the root logger's level
+            if root_logger.level != logging.NOTSET:
+                self.setLevel(root_logger.level)
+
+    def _get_user_min_level(self) -> int:
+        """Get the minimum log level from environment variable."""
+        level_str = os.environ.get("ALLIGATOR_MIN_LOG_LEVEL", "INFO").upper()
+        try:
+            return getattr(LogLevel, level_str).value
+        except AttributeError:
+            return LogLevel.INFO.value
+
+    def _log(self, level, msg, args, **kwargs):
+        """Override the internal _log method to implement level filtering."""
+        if level >= self._user_min_level:
+            super()._log(level, msg, args, **kwargs)
+
+    def log(self, level, msg, *args, **kwargs):
+        """Log with explicit level (supports both int and LogLevel enum)."""
+        if isinstance(level, LogLevel):
+            level = level.value
+        if level >= self._user_min_level:
+            super().log(level, msg, *args, **kwargs)
+
+    def debug(self, msg, *args, **kwargs):
+        """Log a debug message."""
+        if LogLevel.DEBUG >= self._user_min_level:
+            super().debug(msg, *args, **kwargs)
+
+    def info(self, msg, *args, **kwargs):
+        """Log an info message."""
+        if LogLevel.INFO >= self._user_min_level:
+            super().info(msg, *args, **kwargs)
+
+    def warning(self, msg, *args, **kwargs):
+        """Log a warning message."""
+        if LogLevel.WARNING >= self._user_min_level:
+            super().warning(msg, *args, **kwargs)
+
+    def error(self, msg, *args, **kwargs):
+        """Log an error message."""
+        if LogLevel.ERROR >= self._user_min_level:
+            super().error(msg, *args, **kwargs)
+
+    def critical(self, msg, *args, **kwargs):
+        """Log a critical message."""
+        if LogLevel.CRITICAL >= self._user_min_level:
+            super().critical(msg, *args, **kwargs)
+
+    def exception(self, msg, *args, exc_info=True, **kwargs):
+        """Log an exception message."""
+        if LogLevel.ERROR >= self._user_min_level:
+            super().exception(msg, *args, exc_info=exc_info, **kwargs)
+
+    def __getstate__(self):
+        """Support for pickling."""
+        return {"name": self.name}
+
+    def __setstate__(self, state):
+        """Support for unpickling."""
+        self.__init__(state["name"])
+
+    def __reduce__(self):
+        """Support for multiprocessing pickling."""
+        return (ConditionalLogger, (self.name,))
 
 
 class SilentLogger(logging.Logger):
@@ -100,10 +191,10 @@ def setup_logging(
     )
 
     # Return the root logger for Alligator
-    return logging.getLogger("alligator")
+    return get_logger("alligator")
 
 
-def get_logger(name: str) -> logging.Logger:
+def get_logger(name: str):
     """
     Get a logger for a specific component.
 
@@ -111,7 +202,7 @@ def get_logger(name: str) -> logging.Logger:
         name: Name of the component (e.g., 'coordinator', 'data_manager')
 
     Returns:
-        Logger instance for the component
+        ConditionalLogger instance for the component (or SilentLogger if disabled)
     """
     # Check if logging is disabled via environment variable (for worker processes)
     if os.environ.get("ALLIGATOR_DISABLE_LOGGING") == "1":
@@ -119,7 +210,8 @@ def get_logger(name: str) -> logging.Logger:
         logging.disable(logging.CRITICAL)
         return SilentLogger(f"alligator.{name}")
 
-    return logging.getLogger(f"alligator.{name}")
+    # Return a ConditionalLogger instance
+    return ConditionalLogger(f"alligator.{name}")
 
 
 def disable_logging():

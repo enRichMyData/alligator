@@ -1,6 +1,6 @@
 import traceback
 from collections import defaultdict
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Mapping, Set, Union
 
 import pandas as pd
 from pymongo import UpdateOne
@@ -30,6 +30,7 @@ class RowBatchProcessor(DatabaseAccessMixin):
         literal_fetcher: LiteralFetcher | None = None,
         max_candidates_in_result: int = 5,
         fuzzy_retry: bool = False,
+        column_types: Mapping[str, Union[str, List[str]]] | None = None,
         **kwargs,
     ):
         self.dataset_name = dataset_name
@@ -40,6 +41,16 @@ class RowBatchProcessor(DatabaseAccessMixin):
         self.literal_fetcher = literal_fetcher
         self.max_candidates_in_result = max_candidates_in_result
         self.fuzzy_retry = fuzzy_retry
+        # Process column_types to ensure they are all lists
+        self.column_types = {}
+        if column_types:
+            for col, types_value in column_types.items():
+                if isinstance(types_value, str):
+                    self.column_types[col] = [types_value]
+                elif isinstance(types_value, list):
+                    self.column_types[col] = types_value
+                else:
+                    self.column_types[col] = []
         self._db_name = kwargs.get("db_name", "alligator_db")
         self._mongo_uri = kwargs.get("mongo_uri", "mongodb://gator-mongodb:27017")
         self.input_collection = kwargs.get("input_collection", "input_data")
@@ -127,16 +138,21 @@ class RowBatchProcessor(DatabaseAccessMixin):
         fetch_groups = set()
         for entity in entities:
             qids_key = tuple(sorted(entity.correct_qids)) if entity.correct_qids else ()
-            fetch_key = (entity.value, entity.fuzzy, qids_key)
+            # Get column types for this entity's column
+            column_types = self.column_types.get(entity.col_index, [])
+            types_key = tuple(sorted(column_types))
+            fetch_key = (entity.value, entity.fuzzy, qids_key, types_key)
             fetch_groups.add(fetch_key)
 
         unique_entities = []
         unique_fuzzies = []
         unique_qids = []
-        for value, fuzzy, qids_tuple in fetch_groups:
+        unique_types = []
+        for value, fuzzy, qids_tuple, types_tuple in fetch_groups:
             unique_entities.append(value)
             unique_fuzzies.append(fuzzy)
             unique_qids.append(list(qids_tuple))
+            unique_types.append(list(types_tuple))
 
         self.logger.info(
             f"Fetching candidates for {len(unique_entities)} distinct mentions "
@@ -147,23 +163,26 @@ class RowBatchProcessor(DatabaseAccessMixin):
             entities=unique_entities,
             fuzzies=unique_fuzzies,
             qids=unique_qids,
+            types=unique_types,
         )
 
         retry_fetch_groups = set()
-        for value, fuzzy, qids_tuple in fetch_groups:
+        for value, fuzzy, qids_tuple, types_tuple in fetch_groups:
             retrieved_candidates = initial_results.get(value, [])
             if self.fuzzy_retry and not fuzzy and len(retrieved_candidates) < 1:
-                retry_key = (value, True, qids_tuple)  # fuzzy=True for retry
+                retry_key = (value, True, qids_tuple, types_tuple)  # fuzzy=True for retry
                 retry_fetch_groups.add(retry_key)
 
         if retry_fetch_groups:
             retry_entities = []
             retry_fuzzies = []
             retry_qids = []
-            for value, fuzzy, qids_tuple in retry_fetch_groups:
+            retry_types = []
+            for value, fuzzy, qids_tuple, types_tuple in retry_fetch_groups:
                 retry_entities.append(value)
                 retry_fuzzies.append(fuzzy)
                 retry_qids.append(list(qids_tuple))
+                retry_types.append(list(types_tuple))
 
             self.logger.info(f"Performing fuzzy retry for {len(retry_entities)} distinct mentions")
 
@@ -171,6 +190,7 @@ class RowBatchProcessor(DatabaseAccessMixin):
                 entities=retry_entities,
                 fuzzies=retry_fuzzies,
                 qids=retry_qids,
+                types=retry_types,
             )
 
             for value in retry_entities:

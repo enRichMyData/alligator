@@ -8,7 +8,7 @@ backward compatibility with the existing API.
 
 import asyncio
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
 
 import aiohttp
 import pandas as pd
@@ -37,6 +37,7 @@ class Alligator:
         table_name: str | None = None,
         target_rows: List[str] | None = None,
         target_columns: ColType | None = None,
+        column_types: Mapping[str, Union[str, List[str]]] | None = None,
         worker_batch_size: int = 64,
         num_workers: Optional[int] = None,
         max_candidates_in_result: int = 5,
@@ -69,6 +70,7 @@ class Alligator:
             table_name=table_name,
             target_rows=target_rows,
             target_columns=target_columns,
+            column_types=column_types,
             worker_batch_size=worker_batch_size,
             num_workers=num_workers,
             max_candidates_in_result=max_candidates_in_result,

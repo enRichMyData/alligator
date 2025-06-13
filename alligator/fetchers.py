@@ -72,6 +72,7 @@ class CandidateFetcher(DatabaseAccessMixin):
         entities: List[str],
         fuzzies: List[bool],
         qids: List[List[str]],
+        types: Optional[List[List[str]]] = None,
     ) -> Dict[str, List[dict]]:
         """
         Fetch candidates for multiple entities in a batch.
@@ -80,17 +81,21 @@ class CandidateFetcher(DatabaseAccessMixin):
             entities: List of entity names to find candidates for
             fuzzies: Whether to use fuzzy matching for each entity
             qids: Known correct QIDs for each entity (optional)
+            types: List of type QIDs to constrain the search for each entity (optional)
 
         Returns:
             Dictionary mapping entity names to lists of candidate dictionaries
         """
-        return await self.fetch_candidates_batch_async(entities, fuzzies, qids)
+        if types is None:
+            types = [[] for _ in entities]
+        return await self.fetch_candidates_batch_async(entities, fuzzies, qids, types)
 
     async def _fetch_candidates(
         self,
         entity_name,
         fuzzy,
         qid,
+        types: Optional[str] = None,
         use_cache: bool = False,
         kind: str = "entity",
     ):
@@ -107,6 +112,8 @@ class CandidateFetcher(DatabaseAccessMixin):
         )
         if qid:
             url += f"&ids={qid}"
+        if types:
+            url += f"&types={types}"
 
         backoff = 1
         for attempts in range(5):
@@ -140,6 +147,7 @@ class CandidateFetcher(DatabaseAccessMixin):
                             entity_name=entity_name,
                             fuzzy=fuzzy,
                             qid=qid,
+                            types=types or "",
                             kind=kind,
                         )
                         cache.put(cache_key, fetched_candidates)
@@ -160,16 +168,22 @@ class CandidateFetcher(DatabaseAccessMixin):
         # If all attempts fail
         return entity_name, []
 
-    async def fetch_candidates_batch_async(self, entities, fuzzies, qids: List[List[str]]):
+    async def fetch_candidates_batch_async(
+        self, entities, fuzzies, qids: List[List[str]], types: Optional[List[List[str]]] = None
+    ):
         """
         This used to be Alligator.fetch_candidates_batch_async.
         """
+        if types is None:
+            types = [[] for _ in entities]
+
         results = {}
         to_fetch = []
 
         # Decide which entities need to be fetched
-        for entity_name, fuzzy, entity_qids in zip(entities, fuzzies, qids):
+        for entity_name, fuzzy, entity_qids, entity_types in zip(entities, fuzzies, qids, types):
             qid_str = " ".join(entity_qids) if entity_qids else ""
+            types_str = " ".join(entity_types) if entity_types else ""
 
             if cache := self.get_candidate_cache():
                 cache_key = get_cache_key(
@@ -179,6 +193,7 @@ class CandidateFetcher(DatabaseAccessMixin):
                     entity_name=entity_name,
                     fuzzy=fuzzy,
                     qid=qid_str,
+                    types=types_str,
                     kind="entity",
                 )
                 cached_result = cache.get(cache_key)
@@ -191,18 +206,18 @@ class CandidateFetcher(DatabaseAccessMixin):
                     if all(q in cached_qids for q in entity_qids):
                         results[entity_name] = cached_result
                     else:
-                        to_fetch.append((entity_name, fuzzy, qid_str))
+                        to_fetch.append((entity_name, fuzzy, qid_str, types_str))
                 else:
                     results[entity_name] = cached_result
             else:
-                to_fetch.append((entity_name, fuzzy, qid_str))
+                to_fetch.append((entity_name, fuzzy, qid_str, types_str))
 
         if not to_fetch:
             return self._remove_placeholders(results)
 
         tasks = []
-        for entity_name, fuzzy, qid_str in to_fetch:
-            tasks.append(self._fetch_candidates(entity_name, fuzzy, qid_str))
+        for entity_name, fuzzy, qid_str, types_str in to_fetch:
+            tasks.append(self._fetch_candidates(entity_name, fuzzy, qid_str, types_str))
         done = await asyncio.gather(*tasks, return_exceptions=False)
         for entity_name, candidates in done:
             results[entity_name] = candidates

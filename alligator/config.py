@@ -10,7 +10,7 @@ import os
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Mapping, Optional, Union
 
 import pandas as pd
 
@@ -28,6 +28,7 @@ class DataConfig:
     table_name: Optional[str] = None
     target_rows: List[str] = field(default_factory=list)
     target_columns: Optional[ColType] = None
+    column_types: Mapping[str, Union[str, List[str]]] = field(default_factory=dict)
     save_output: bool = True
     save_output_to_csv: bool = True
     correct_qids: Dict[str, Union[str, List[str]]] = field(default_factory=dict)
@@ -39,6 +40,7 @@ class DataConfig:
         self._process_defaults()
         self._process_target_rows()
         self._process_correct_qids()
+        self._process_column_types()
 
     def _validate_input(self):
         """Validate input data configuration."""
@@ -98,6 +100,36 @@ class DataConfig:
                 self.correct_qids[key] = [value]
             elif not isinstance(value, list):
                 raise ValueError(f"Correct QIDs for {key} must be a string or a list of strings.")
+
+    def _process_column_types(self):
+        """Process and validate column types (Wikidata QIDs)."""
+        if not self.column_types:
+            return
+
+        processed_types = {}
+        for column, types in self.column_types.items():
+            # Ensure column is a string
+            column_str = str(column)
+
+            # Process types - can be a single string or list of strings
+            if isinstance(types, str):
+                processed_types[column_str] = [types]
+            elif isinstance(types, list):
+                # Validate that all items in the list are strings (QIDs)
+                for qid in types:
+                    if not isinstance(qid, str):
+                        raise ValueError(
+                            f"All type QIDs for column {column_str} must be strings, "
+                            f"got {type(qid)}"
+                        )
+                processed_types[column_str] = types
+            else:
+                raise ValueError(
+                    f"Column types for {column_str} must be a string or list of strings, "
+                    f"got {type(types)}"
+                )
+
+        self.column_types = processed_types
 
 
 @dataclass
@@ -224,6 +256,7 @@ class AlligatorConfig:
         table_name: Optional[str] = None,
         target_rows: Optional[List[str]] = None,
         target_columns: Optional[ColType] = None,
+        column_types: Optional[Mapping[str, Union[str, List[str]]]] = None,
         save_output: bool = True,
         save_output_to_csv: bool = True,
         correct_qids: Optional[Dict[str, Union[str, List[str]]]] = None,
@@ -265,6 +298,7 @@ class AlligatorConfig:
             table_name=table_name,
             target_rows=target_rows or [],
             target_columns=target_columns,
+            column_types=dict(column_types) if column_types else {},
             save_output=save_output,
             save_output_to_csv=save_output_to_csv,
             correct_qids=correct_qids or {},

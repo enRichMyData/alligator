@@ -154,6 +154,11 @@ if __name__ == "__main__":
             "LIT": {"1": "NUMBER", "2": "NUMBER", "3": "STRING", "4": "NUMBER", "5": "STRING"},
             "IGNORED": ["6", "9", "10"],
         },
+        column_types={
+            "0": ["Q5"],          # Column 0: Person entities
+            "7": ["Q11424"],      # Column 7: Film entities
+            "1": ["Q5", "Q33999"], # Column 1: Person or Actor entities
+        },
         mongo_uri="mongodb://localhost:27017",
     )
 
@@ -198,6 +203,7 @@ if __name__ == "__main__":
 - `save_output_to_csv`: Whether to save to CSV format (default: True)
 - `target_rows`: Specific row indices to process (optional)
 - `target_columns`: Column type specifications (optional)
+- `column_types`: Wikidata QIDs to constrain candidate retrieval per column (optional)
 - `correct_qids`: Known correct QIDs for evaluation (optional)
 
 #### Performance Tuning
@@ -222,6 +228,36 @@ In the `target_columns` parameter, specify column types as:
 - **IGNORED**: Columns to skip during processing
 
 Columns not explicitly specified are automatically classified using a built-in column classifier.
+
+### Constraining Candidate Retrieval with Column Types
+
+The `column_types` parameter allows you to specify Wikidata entity types (QIDs) to constrain the candidate retrieval for specific columns. This feature helps improve precision by limiting the search space to relevant entity types.
+
+```python
+column_types = {
+    "0": ["Q5"],                    # Column 0: Only Person entities
+    "1": ["Q11424"],                # Column 1: Only Film entities
+    "2": ["Q5", "Q33999"],          # Column 2: Person or Actor entities
+    "3": "Q515",                    # Column 3: City entities (can be string)
+}
+```
+
+**Key Points:**
+- Column indices should be strings (e.g., "0", "1", "2")
+- Values can be a single QID string or a list of QID strings
+- QIDs are Wikidata entity type identifiers (e.g., Q5 for Person, Q11424 for Film)
+- Multiple types can be specified for flexible matching
+- If not specified, no type constraints are applied to that column
+
+**Common Wikidata QIDs:**
+- `Q5`: Human/Person
+- `Q11424`: Film
+- `Q33999`: Actor
+- `Q515`: City
+- `Q6256`: Country
+- `Q43229`: Organization
+
+This feature works independently of the `target_columns` parameter, which specifies column data types (NE/LIT/IGNORED).
 
 ### Output Format
 

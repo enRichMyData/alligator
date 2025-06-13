@@ -44,3 +44,5 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Import the main class
 from .alligator import Alligator as Alligator
+from .config import AlligatorConfig as AlligatorConfig
+from .coordinator import AlligatorCoordinator as AlligatorCoordinator

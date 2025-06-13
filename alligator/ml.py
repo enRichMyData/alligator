@@ -10,6 +10,7 @@ from pymongo.operations import UpdateOne
 from alligator import PROJECT_ROOT
 from alligator.database import DatabaseAccessMixin
 from alligator.feature import DEFAULT_FEATURES
+from alligator.log import get_logger
 from alligator.mongo import MongoWrapper
 from alligator.utils import keys_with_max_count
 
@@ -35,6 +36,7 @@ class MLWorker(DatabaseAccessMixin):
         self.worker_id = worker_id
         self.table_name = table_name
         self.dataset_name = dataset_name
+        self.logger = get_logger(f"ml_worker_{worker_id}")
         if stage.lower() not in {"rank", "rerank"}:
             raise ValueError(f"Invalid stage: {stage}. Possible values are: 'rank', 'rerank'")
         self.stage = stage
@@ -88,7 +90,7 @@ class MLWorker(DatabaseAccessMixin):
 
         processed_count = 0
         while processed_count < total_docs:
-            print(
+            self.logger.info(
                 f"ML ranking for stage {self.stage} progress: "
                 f"{processed_count}/{total_docs} documents"
             )
@@ -105,7 +107,7 @@ class MLWorker(DatabaseAccessMixin):
                 if remaining == 0:
                     break
 
-        print(
+        self.logger.info(
             f"ML ranking for stage {self.stage} complete: {processed_count}/{total_docs} documents"
         )
 

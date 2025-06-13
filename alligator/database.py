@@ -3,6 +3,8 @@ from typing import Dict
 from pymongo import MongoClient
 from pymongo.database import Database
 
+from alligator.log import get_logger
+
 
 class DatabaseAccessMixin:
     """Mixin to provide standardized database access."""
@@ -22,6 +24,7 @@ class DatabaseManager:
     _instance = None
     _connections: Dict[str, MongoClient] = {}
     _databases: Dict[str, Database] = {}
+    _logger = get_logger("database_manager")
 
     def __new__(cls):
         if cls._instance is None:
@@ -78,9 +81,9 @@ class DatabaseManager:
         for uri, client in cls._connections.items():
             try:
                 client.close()
-                print(f"Closed MongoDB connection to {uri}")
+                cls._logger.info(f"Closed MongoDB connection to {uri}")
             except Exception as e:
-                print(f"Error closing MongoDB connection: {e}")
+                cls._logger.error(f"Error closing MongoDB connection: {e}")
 
         cls._connections.clear()
         cls._databases.clear()

@@ -4,7 +4,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 
 from alligator.database import DatabaseAccessMixin
-from alligator.typing import Candidate, LiteralsData, ObjectsData
+from alligator.log import get_logger
+from alligator.types import Candidate, LiteralsData, ObjectsData
 from alligator.utils import (
     ColumnHelper,
     clean_str,
@@ -60,6 +61,7 @@ class Feature(DatabaseAccessMixin):
         self.table_name = table_name
         self.top_n_cta_cpa_freq = top_n_cta_cpa_freq
         self.selected_features = features or DEFAULT_FEATURES
+        self.logger = get_logger("feature")
         self._db_name = kwargs.pop("db_name", "alligator_db")
         self._mongo_uri = kwargs.pop("mongo_uri", "mongodb://gator-mongodb:27017/")
         self.input_collection = kwargs.get("input_collection", "input_data")
@@ -150,19 +152,23 @@ class Feature(DatabaseAccessMixin):
             docs_to_get = max(1, int(total_docs_matching_query * docs_to_process))
 
         if docs_to_get == 0:
-            print("No documents match the criteria for computing global frequencies.")
+            self.logger.warning(
+                "No documents match the criteria for computing global frequencies."
+            )
             return defaultdict(Counter), defaultdict(Counter)
 
         # Base pipeline stages
         pipeline: List[Dict[str, Any]] = [{"$match": query}]
 
         if random_sample:
-            print(
+            self.logger.info(
                 f"Computing type-frequency features by randomly sampling {docs_to_get} documents"
             )
             pipeline.append({"$sample": {"size": docs_to_get}})
         else:
-            print(f"Computing type-frequency features by processing first {docs_to_get} documents")
+            self.logger.info(
+                f"Computing type-frequency features by processing first {docs_to_get} documents"
+            )
             pipeline.append({"$limit": docs_to_get})
 
         # Add $lookup to join with candidates
@@ -249,7 +255,7 @@ class Feature(DatabaseAccessMixin):
                                 seen_predicates.add(pred_id)
 
         if n_docs == 0 and total_docs_matching_query > 0 and docs_to_get > 0:
-            print(
+            self.logger.warning(
                 f"Warning: {docs_to_get} documents were selected for frequency computation, "
                 "but the aggregation pipeline (possibly $lookup) returned no combined documents. "
                 "Check if candidates exist for these documents or "

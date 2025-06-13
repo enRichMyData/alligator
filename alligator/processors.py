@@ -8,8 +8,9 @@ from pymongo import UpdateOne
 from alligator.database import DatabaseAccessMixin
 from alligator.feature import Feature
 from alligator.fetchers import CandidateFetcher, LiteralFetcher, ObjectFetcher
+from alligator.log import get_logger
 from alligator.mongo import MongoWrapper
-from alligator.typing import Candidate, Entity, RowData
+from alligator.types import Candidate, Entity, RowData
 from alligator.utils import ColumnHelper, clean_str
 
 
@@ -44,6 +45,7 @@ class RowBatchProcessor(DatabaseAccessMixin):
         self.input_collection = kwargs.get("input_collection", "input_data")
         self.candidate_collection = kwargs.get("candidate_collection", "candidates")
         self.mongo_wrapper = MongoWrapper(self._mongo_uri, self._db_name)
+        self.logger = get_logger("processors")
 
     async def process_rows_batch(self, docs):
         """
@@ -136,7 +138,7 @@ class RowBatchProcessor(DatabaseAccessMixin):
             unique_fuzzies.append(fuzzy)
             unique_qids.append(list(qids_tuple))
 
-        print(
+        self.logger.info(
             f"Fetching candidates for {len(unique_entities)} distinct mentions "
             f"(from {len(entities)} total entities)"
         )
@@ -163,7 +165,7 @@ class RowBatchProcessor(DatabaseAccessMixin):
                 retry_fuzzies.append(fuzzy)
                 retry_qids.append(list(qids_tuple))
 
-            print(f"Performing fuzzy retry for {len(retry_entities)} distinct mentions")
+            self.logger.info(f"Performing fuzzy retry for {len(retry_entities)} distinct mentions")
 
             retry_results = await self.candidate_fetcher.fetch_candidates_batch(
                 entities=retry_entities,

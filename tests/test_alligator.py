@@ -205,6 +205,9 @@ class TestAlligator:
             mock_config_instance.worker.num_workers = 1
 
             mock_config_class.return_value = mock_config_instance
+            Alligator(
+                input_csv=temp_csv_file, dataset_name="test_dataset", column_types={"0": ["Q5"]}
+            )
 
             # Verify AlligatorConfig was called with correct parameters
             mock_config_class.assert_called_once()

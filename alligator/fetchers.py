@@ -98,7 +98,7 @@ class CandidateFetcher(DatabaseAccessMixin):
         types: Optional[str] = None,
         use_cache: bool = False,
         kind: str = "entity",
-    ):
+    ) -> tuple[str, List[dict]]:
         """
         This used to be Alligator._fetch_candidates. Logic unchanged.
         """

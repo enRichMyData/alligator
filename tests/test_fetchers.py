@@ -8,6 +8,24 @@ from alligator.fetchers import CandidateFetcher, LiteralFetcher, ObjectFetcher, 
 from alligator.mongo import MongoCache
 
 
+class MockResponse:
+    def __init__(self, json_data, status=200):
+        self.json_data = json_data
+        self.status = status
+
+    def raise_for_status(self):
+        return None
+
+    async def json(self):
+        return self.json_data
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        pass
+
+
 class TestGetCacheKey:
     def test_cache_key_generation(self):
         """Test cache key generation with various parameters."""
@@ -174,6 +192,15 @@ class TestCandidateFetcher:
         assert placeholder_found
 
     @pytest.mark.asyncio
+    async def test_fetch_candidates(self, candidate_fetcher: CandidateFetcher):
+        """Test fetch_candidates method."""
+        mock_response_data = [{"id": "Q76", "name": "Barack Obama"}]
+        candidate_fetcher.session.get.return_value = MockResponse(mock_response_data)
+        result = await candidate_fetcher._fetch_candidates("Barack Obama", False, "Q76", "Q5")
+        assert result[0] == "Barack Obama"
+        assert len(result[1]) == 1
+
+    @pytest.mark.asyncio
     async def test_fetch_candidates_batch_async_with_cache(self, candidate_fetcher):
         """Test batch fetching with cache hits."""
         # Mock cache to return cached result for first entity
@@ -218,6 +245,90 @@ class TestCandidateFetcher:
         assert len(cleaned_results["Brad Pitt"]) == 1
         assert cleaned_results["Brad Pitt"][0]["id"] == "Q35332"
         assert len(cleaned_results["Tom Cruise"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_fetch_candidates_with_types(self, candidate_fetcher: CandidateFetcher):
+        """Test _fetch_candidates method with types parameter."""
+        mock_response_data = [
+            {
+                "id": "Q76",
+                "name": "Barack Obama",
+                "description": "44th President of the United States",
+            }
+        ]
+
+        # Create a proper async context manager mock
+        mock_response = MockResponse(mock_response_data)
+        candidate_fetcher.session.get.return_value.__aenter__ = AsyncMock(
+            return_value=mock_response
+        )
+        candidate_fetcher.session.get.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        result = await candidate_fetcher._fetch_candidates("Barack Obama", False, "Q76", "Q5")
+
+        # Verify the result structure
+        assert result[0] == "Barack Obama"
+        assert len(result[1]) == 1
+        assert result[1][0]["id"] == "Q76"
+        assert result[1][0]["name"] == "Barack Obama"
+
+        # Verify the URL was constructed correctly with types parameter
+        args, kwargs = candidate_fetcher.session.get.call_args
+        url = args[0]
+        assert "name=Barack%20Obama" in url
+        assert "types=Q5" in url
+        assert "ids=Q76" in url
+        assert f"limit={candidate_fetcher.num_candidates}" in url
+
+    @pytest.mark.asyncio
+    async def test_fetch_candidates_with_placeholder_addition(
+        self, candidate_fetcher: CandidateFetcher
+    ):
+        """Test that missing QIDs get placeholder entries added."""
+        # Mock response that's missing one of the requested QIDs
+        mock_response_data = [{"id": "Q76", "name": "Barack Obama"}]
+
+        mock_response = MockResponse(mock_response_data)
+        candidate_fetcher.session.get.return_value.__aenter__ = AsyncMock(
+            return_value=mock_response
+        )
+        candidate_fetcher.session.get.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        # Request two QIDs but only one is returned
+        result = await candidate_fetcher._fetch_candidates(
+            "Barack Obama", False, "Q76 Q12345", "Q5"
+        )
+
+        assert result[0] == "Barack Obama"
+        assert len(result[1]) == 2  # Original + placeholder
+
+        # Check that both QIDs are present
+        qids = {item["id"] for item in result[1]}
+        assert "Q76" in qids
+        assert "Q12345" in qids
+
+        # Check that placeholder was created for missing QID
+        placeholder = next((item for item in result[1] if item["id"] == "Q12345"), None)
+        assert placeholder is not None
+        assert placeholder.get("is_placeholder") is True
+        assert placeholder["name"] is None
+
+    @pytest.mark.asyncio
+    async def test_fetch_candidates_network_error_handling(
+        self, candidate_fetcher: CandidateFetcher
+    ):
+        """Test error handling and retry logic."""
+        # Mock session to raise an exception
+        candidate_fetcher.session.get.side_effect = aiohttp.ClientError("Network error")
+
+        result = await candidate_fetcher._fetch_candidates("Barack Obama", False, "", "")
+
+        # Should return empty list on persistent failure
+        assert result[0] == "Barack Obama"
+        assert result[1] == []
+
+        # Should have attempted multiple times (5 attempts)
+        assert candidate_fetcher.session.get.call_count == 5
 
 
 class TestObjectFetcher:

@@ -8,6 +8,7 @@ import pytest
 from alligator.alligator import Alligator
 from alligator.config import AlligatorConfig
 from alligator.coordinator import AlligatorCoordinator
+from alligator.types import ColType
 
 
 class TestAlligator:
@@ -264,3 +265,130 @@ class TestAlligator:
         # Should be able to access nested config properties
         assert alligator.config.data.dataset_name == "test_dataset"
         assert alligator.config.data.column_types["0"] == ["Q5"]
+
+    def test_alligator_close_mongo_connection(self, temp_csv_file, mock_coordinator):
+        """Test closing mongo connection."""
+        alligator = Alligator(input_csv=temp_csv_file)
+
+        # Mock the coordinator's close_connections method
+        mock_coordinator.close_connections = Mock()
+
+        alligator.close_mongo_connection()
+
+        # Verify coordinator's close_connections was called
+        mock_coordinator.close_connections.assert_called_once()
+
+    def test_alligator_onboard_data(self, temp_csv_file, mock_coordinator):
+        """Test data onboarding delegation."""
+        alligator = Alligator(input_csv=temp_csv_file)
+
+        # Mock the data manager's onboard_data method
+        mock_coordinator.data_manager.onboard_data = Mock()
+
+        # Test with parameters including target_columns
+        target_cols: ColType = {"NE": {"0": "PERSON"}, "LIT": {}, "IGNORED": []}
+
+        alligator.onboard_data(
+            dataset_name="new_dataset", table_name="new_table", target_columns=target_cols
+        )
+
+        # Verify config was updated
+        assert alligator.config.data.dataset_name == "new_dataset"
+        assert alligator.config.data.table_name == "new_table"
+        assert alligator.config.data.target_columns == target_cols
+
+        # Verify data manager's onboard_data was called
+        mock_coordinator.data_manager.onboard_data.assert_called_once()
+
+    def test_alligator_save_output(self, temp_csv_file, mock_coordinator):
+        """Test save output delegation."""
+        alligator = Alligator(input_csv=temp_csv_file)
+
+        # Mock the output manager's save_output method
+        expected_output = [{"entity": "result"}]
+        mock_coordinator.output_manager.save_output = Mock(return_value=expected_output)
+
+        result = alligator.save_output()
+
+        # Verify output manager's save_output was called
+        mock_coordinator.output_manager.save_output.assert_called_once()
+        assert result == expected_output
+
+    @pytest.mark.asyncio
+    async def test_alligator_initialize_async_components(self, temp_csv_file, mock_coordinator):
+        """Test async components initialization."""
+        from unittest.mock import AsyncMock
+
+        alligator = Alligator(input_csv=temp_csv_file)
+
+        # Mock the worker manager's initialize_async_components method
+        mock_session = Mock()
+        mock_coordinator.worker_manager.initialize_async_components = AsyncMock(
+            return_value=mock_session
+        )
+
+        result = await alligator._initialize_async_components()
+
+        # Verify worker manager's method was called
+        mock_coordinator.worker_manager.initialize_async_components.assert_called_once()
+        assert result == mock_session
+
+    def test_alligator_ml_worker(self, temp_csv_file, mock_coordinator):
+        """Test ML worker delegation."""
+        alligator = Alligator(input_csv=temp_csv_file)
+
+        # Mock the ML manager's _ml_worker method
+        expected_result = "ml_worker_result"
+        mock_coordinator.ml_manager._ml_worker = Mock(return_value=expected_result)
+
+        result = alligator.ml_worker(0, "test_stage", ("freq1", "freq2"))
+
+        # Verify ML manager's _ml_worker was called
+        mock_coordinator.ml_manager._ml_worker.assert_called_once_with(
+            0, "test_stage", ("freq1", "freq2")
+        )
+        assert result == expected_result
+
+    @pytest.mark.asyncio
+    async def test_alligator_worker_async(self, temp_csv_file, mock_coordinator):
+        """Test async worker delegation."""
+        from unittest.mock import AsyncMock
+
+        alligator = Alligator(input_csv=temp_csv_file)
+
+        # Mock the worker manager's _worker_async method
+        mock_coordinator.worker_manager._worker_async = AsyncMock()
+
+        await alligator.worker_async(1)
+
+        # Verify worker manager's _worker_async was called
+        mock_coordinator.worker_manager._worker_async.assert_called_once_with(1, alligator.feature)
+
+    def test_alligator_worker(self, temp_csv_file, mock_coordinator):
+        """Test sync worker delegation."""
+        alligator = Alligator(input_csv=temp_csv_file)
+
+        # Mock the async worker method
+        with patch.object(alligator, "worker_async"):
+            with patch("asyncio.run") as mock_asyncio_run:
+                alligator.worker(2)
+
+                # Verify asyncio.run was called
+                mock_asyncio_run.assert_called_once()
+
+    def test_alligator_extract_row_data(self, temp_csv_file, mock_coordinator):
+        """Test extract row data delegation."""
+        alligator = Alligator(input_csv=temp_csv_file)
+
+        # Mock the output manager's _extract_row_data method
+        expected_result = {"extracted": "data"}
+        mock_coordinator.output_manager._extract_row_data = Mock(return_value=expected_result)
+
+        doc = {"test": "document"}
+        header = ["col1", "col2"]
+
+        result = alligator._extract_row_data(doc, header)
+
+        # Verify output manager's _extract_row_data was called
+        mock_coordinator.output_manager._extract_row_data.assert_called_once_with(doc, header)
+        assert result == expected_result

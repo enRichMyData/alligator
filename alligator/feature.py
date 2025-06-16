@@ -68,15 +68,6 @@ class Feature(DatabaseAccessMixin):
         self.candidate_collection = kwargs.get("candidate_collection", "candidates")
         self._predicate_frequencies = None
 
-    def map_kind_to_numeric(self, kind: str) -> int:
-        mapping: Dict[str, int] = {
-            "entity": 1,
-            "type": 2,
-            "disambiguation": 3,
-            "predicate": 4,
-        }
-        return mapping.get(kind, 1)
-
     def process_candidates(self, candidates: List[Candidate], row: Optional[str]) -> None:
         """
         Process candidate records to calculate a set of features for each candidate.
@@ -155,7 +146,7 @@ class Feature(DatabaseAccessMixin):
             self.logger.warning(
                 "No documents match the criteria for computing global frequencies."
             )
-            return defaultdict(Counter), defaultdict(Counter)
+            return defaultdict(Counter), defaultdict(Counter), {}
 
         # Base pipeline stages
         pipeline: List[Dict[str, Any]] = [{"$match": query}]
@@ -320,7 +311,7 @@ class Feature(DatabaseAccessMixin):
                         continue
 
                     # Calculate maximum object score for this subject
-                    obj_score_max = 0.0
+                    p_subj_ne_max = 0.0
 
                     for obj_candidate in obj_candidates:
                         obj_id = obj_candidate.id
@@ -328,30 +319,25 @@ class Feature(DatabaseAccessMixin):
                             continue
 
                         # Calculate similarity score (average of string similarity features)
-                        string_features = []
+                        p_subj_ne = 0.0
                         for feature_name in ["ed_score", "jaccard_score", "jaccardNgram_score"]:
                             if feature_name in obj_candidate.features:
-                                string_features.append(obj_candidate.features[feature_name])
-
-                        if not string_features:
-                            continue
-
-                        p_subj_ne = sum(string_features) / len(string_features)
-                        obj_score_max = max(obj_score_max, p_subj_ne)
+                                p_subj_ne += obj_candidate.features[feature_name]
+                        p_subj_ne /= 3.0
+                        p_subj_ne_max = max(p_subj_ne_max, p_subj_ne)
 
                         # Track the best score for each object
                         if obj_id not in object_rel_score_buffer:
                             object_rel_score_buffer[obj_id] = 0
 
                         # Calculate reverse score from subject to object
-                        subj_string_features = []
+                        p_obj_ne = 0.0
                         for feature_name in ["ed_score", "jaccard_score", "jaccardNgram_score"]:
                             if feature_name in subj_candidate.features:
-                                subj_string_features.append(subj_candidate.features[feature_name])
-
-                        score_rel = sum(subj_string_features) / len(subj_string_features)
+                                p_obj_ne += subj_candidate.features[feature_name]
+                        p_obj_ne /= 3.0
                         object_rel_score_buffer[obj_id] = max(
-                            object_rel_score_buffer[obj_id], score_rel
+                            object_rel_score_buffer[obj_id], p_obj_ne
                         )
 
                         # Record predicates connecting subject to object
@@ -362,7 +348,7 @@ class Feature(DatabaseAccessMixin):
                             subj_candidate.predicates[obj_col][predicate] = p_subj_ne
 
                     # Normalize and update subject's feature
-                    subj_candidate.features["p_subj_ne"] += obj_score_max / n_ne_cols
+                    subj_candidate.features["p_subj_ne"] += p_subj_ne_max / n_ne_cols
 
                 # Update object candidates' features
                 for obj_candidate in obj_candidates:

@@ -88,6 +88,7 @@ class WorkerManager(DatabaseAccessMixin):
             object_fetcher,
             literal_fetcher,
             self.config.retrieval.max_candidates_in_result,
+            column_types=self.config.data.column_types,
             db_name=db_name,
             mongo_uri=mongo_uri,
             input_collection=self.config.database.input_collection,

@@ -59,16 +59,22 @@ class AlligatorCoordinator:
         self.logger.info("Step 2: Running workers for candidate retrieval and processing...")
         self.worker_manager.run_workers(self.feature)
 
-        # Step 3: ML pipeline
-        self.logger.info("Step 3: Running ML pipeline...")
-        self.ml_manager.run_ml_pipeline(self.feature)
+        if not self.config.data.candidate_retrieval_only:
+            # Step 3: ML pipeline
+            self.logger.info("Step 3: Running ML pipeline...")
+            self.ml_manager.run_ml_pipeline(self.feature)
 
-        # Step 4: Output generation
-        self.logger.info("Step 4: Generating output...")
-        extracted_rows = self.output_manager.save_output()
+            # Step 4: Output generation
+            self.logger.info("Step 4: Generating output...")
+            extracted_rows = self.output_manager.save_output()
 
-        self.logger.info("Alligator entity linking pipeline completed successfully!")
-        return extracted_rows
+            self.logger.info("Alligator entity linking pipeline completed successfully!")
+            return extracted_rows
+        else:
+            self.logger.info(
+                "Candidate retrieval only mode, skipping ML pipeline and output generation."
+            )
+            return [{}]
 
     def close_connections(self):
         """Cleanup resources and close connections."""

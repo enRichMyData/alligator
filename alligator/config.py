@@ -33,6 +33,7 @@ class DataConfig:
     save_output_to_csv: bool = True
     correct_qids: Dict[str, Union[str, List[str]]] = field(default_factory=dict)
     dry_run: bool = False
+    candidate_retrieval_only: bool = False
 
     def __post_init__(self):
         """Validate and process data configuration after initialization."""
@@ -303,6 +304,7 @@ class AlligatorConfig:
             save_output_to_csv=save_output_to_csv,
             correct_qids=correct_qids or {},
             dry_run=dry_run,
+            candidate_retrieval_only=kwargs.get("candidate_retrieval_only", False),
         )
 
         self.worker = WorkerConfig(

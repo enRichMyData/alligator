@@ -3,7 +3,6 @@ from unittest.mock import AsyncMock, Mock, patch
 import aiohttp
 import pytest
 
-from alligator.feature import Feature
 from alligator.fetchers import CandidateFetcher, LiteralFetcher, ObjectFetcher, get_cache_key
 from alligator.mongo import MongoCache
 
@@ -47,27 +46,19 @@ class TestGetCacheKey:
 
 class TestCandidateFetcher:
     @pytest.fixture
-    def mock_feature(self):
-        """Mock Feature object."""
-        feature = Mock(spec=Feature)
-        feature.selected_features = ["similarity", "popularity"]
-        return feature
-
-    @pytest.fixture
     def mock_session(self):
         """Mock aiohttp session."""
         session = Mock(spec=aiohttp.ClientSession)
         return session
 
     @pytest.fixture
-    def candidate_fetcher(self, mock_feature, mock_session):
+    def candidate_fetcher(self, mock_session):
         """Create CandidateFetcher instance with mocked dependencies."""
         with patch("alligator.fetchers.MongoWrapper"), patch("alligator.fetchers.MongoCache"):
             fetcher = CandidateFetcher(
                 endpoint="https://test.com/api",
                 token="test_token",
                 num_candidates=10,
-                feature=mock_feature,
                 session=mock_session,
                 use_cache=True,
                 db_name="test_db",
@@ -76,23 +67,21 @@ class TestCandidateFetcher:
             fetcher.cache = Mock(spec=MongoCache)
             return fetcher
 
-    def test_candidate_fetcher_init(self, candidate_fetcher, mock_feature, mock_session):
+    def test_candidate_fetcher_init(self, candidate_fetcher, mock_session):
         """Test CandidateFetcher initialization."""
         assert candidate_fetcher.endpoint == "https://test.com/api"
         assert candidate_fetcher.token == "test_token"
         assert candidate_fetcher.num_candidates == 10
-        assert candidate_fetcher.feature == mock_feature
         assert candidate_fetcher.session == mock_session
         assert candidate_fetcher.use_cache is True
 
-    def test_candidate_fetcher_without_cache(self, mock_feature, mock_session):
+    def test_candidate_fetcher_without_cache(self, mock_session):
         """Test CandidateFetcher without cache."""
         with patch("alligator.fetchers.MongoWrapper"):
             fetcher = CandidateFetcher(
                 endpoint="https://test.com/api",
                 token="test_token",
                 num_candidates=10,
-                feature=mock_feature,
                 session=mock_session,
                 use_cache=False,
             )

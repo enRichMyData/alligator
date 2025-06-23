@@ -9,7 +9,6 @@ from urllib.parse import quote
 import aiohttp
 
 from alligator.database import DatabaseAccessMixin
-from alligator.feature import Feature
 from alligator.mongo import MongoCache, MongoWrapper
 from alligator.types import LiteralsData, ObjectsData
 
@@ -43,7 +42,6 @@ class CandidateFetcher(DatabaseAccessMixin):
         endpoint: str,
         token: str,
         num_candidates: int,
-        feature: Feature,
         session: aiohttp.ClientSession,
         use_cache: bool = True,
         **kwargs,
@@ -51,7 +49,6 @@ class CandidateFetcher(DatabaseAccessMixin):
         self.endpoint = endpoint
         self.token = token
         self.num_candidates = num_candidates
-        self.feature = feature
         self.session = session
         self._db_name = kwargs.get("db_name", "alligator_db")
         self._mongo_uri = kwargs.get("mongo_uri", "mongodb://gator-mongodb:27017")

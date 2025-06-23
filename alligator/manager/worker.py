@@ -50,7 +50,6 @@ class WorkerManager(DatabaseAccessMixin):
             entity_endpoint,
             entity_token,
             self.config.retrieval.candidate_retrieval_limit,
-            feature,
             session=session,
             db_name=db_name,
             mongo_uri=mongo_uri,

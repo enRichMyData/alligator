@@ -7,13 +7,13 @@ from alligator.log import enable_logging
 
 
 def main():
-    num_workers = 4
+    num_workers = 3
     num_ml_workers = 2
-    worker_batch_size = 64
+    worker_batch_size = 32
     candidate_retrieval_limit = 50
     candidate_retrieval_only = True
     mongo_uri = "mongodb://localhost:27017/"
-    input_csv = os.path.join(PROJECT_ROOT, "tables", "imdb_top_1000.csv")
+    input_csv = os.path.join(PROJECT_ROOT, "tables", "imdb_top_100.csv")
 
     enable_logging()
     tic = time.perf_counter()

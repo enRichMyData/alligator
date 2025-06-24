@@ -1,6 +1,5 @@
 import asyncio
 import multiprocessing as mp
-import time
 from typing import Dict, List
 
 import aiohttp
@@ -98,7 +97,6 @@ class WorkerManager(DatabaseAccessMixin):
 
     def run_workers(self, feature: Feature) -> None:
         """Run worker processes for batch processing."""
-        tic = time.perf_counter()
         db = self.get_db()
         input_collection = db[self.config.database.input_collection]
 
@@ -121,8 +119,6 @@ class WorkerManager(DatabaseAccessMixin):
         for p in processes:
             p.join()
             p.close()
-        toc = time.perf_counter()
-        self.logger.info(f"All worker processes completed in {toc - tic:0.4f} seconds.")
 
     def _worker(self, rank: int, feature: Feature):
         """Worker process entry point."""

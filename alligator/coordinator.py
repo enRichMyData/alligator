@@ -5,6 +5,7 @@ This module implements the coordinator pattern to orchestrate the entity linking
 pipeline through specialized managers, replacing the monolithic Alligator class.
 """
 
+import time
 from typing import Any, Dict, List
 
 from alligator.config import AlligatorConfig
@@ -53,20 +54,35 @@ class AlligatorCoordinator:
 
         # Step 1: Data onboarding
         self.logger.info("Step 1: Data onboarding...")
-        self.data_manager.onboard_data()
+        tic = time.perf_counter()
+        processed_rows = self.data_manager.onboard_data()
+        toc = time.perf_counter()
+        self.logger.info(f"Data onboarding complete - {processed_rows} rows in {toc - tic:.2f}s")
 
         # Step 2: Worker-based processing
         self.logger.info("Step 2: Running workers for candidate retrieval and processing...")
+        tic = time.perf_counter()
         self.worker_manager.run_workers(self.feature)
+        toc = time.perf_counter()
+        self.logger.info(f"Worker processing complete in {toc - tic:.2f}s")
 
         if not self.config.data.candidate_retrieval_only:
             # Step 3: ML pipeline
             self.logger.info("Step 3: Running ML pipeline...")
+            tic = time.perf_counter()
             self.ml_manager.run_ml_pipeline(self.feature)
+            toc = time.perf_counter()
+            self.logger.info(f"ML pipeline complete in {toc - tic:.2f}s")
 
             # Step 4: Output generation
             self.logger.info("Step 4: Generating output...")
+            tic = time.perf_counter()
             extracted_rows = self.output_manager.save_output()
+            toc = time.perf_counter()
+            self.logger.info(
+                f"Output generation complete in {toc - tic:.2f}s - "
+                f"{len(extracted_rows)} rows extracted"
+            )
 
             self.logger.info("Alligator entity linking pipeline completed successfully!")
             return extracted_rows

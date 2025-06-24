@@ -1,4 +1,3 @@
-import time
 from typing import Dict, List, Tuple, cast
 
 import pandas as pd
@@ -26,9 +25,8 @@ class DataManager(DatabaseAccessMixin):
         )
         self.mongo_wrapper.create_indexes()
 
-    def onboard_data(self) -> None:
+    def onboard_data(self) -> int:
         """Efficiently load data into MongoDB using batched inserts."""
-        start_time = time.perf_counter()
 
         # Get database connection
         db = self.get_db()
@@ -72,16 +70,10 @@ class DataManager(DatabaseAccessMixin):
             context_cols,
             is_csv_path,
             total_rows,
-            start_time,
             dataset_name,
             table_name,
         )
-
-        total_time = time.perf_counter() - start_time
-        self.logger.info(
-            f"Data onboarding complete for dataset '{dataset_name}' "
-            f"and table '{table_name}' - {processed_rows} rows in {total_time:.1f}s"
-        )
+        return processed_rows
 
     def _classify_columns(self, sample: pd.DataFrame) -> Dict[str, str]:
         """Classify columns using the column classifier."""
@@ -191,7 +183,6 @@ class DataManager(DatabaseAccessMixin):
         context_cols: List[str],
         is_csv_path: bool,
         total_rows: int,
-        start_time: float,
         dataset_name: str,
         table_name: str,
     ) -> int:
@@ -243,23 +234,6 @@ class DataManager(DatabaseAccessMixin):
                     input_collection.insert_many(documents, ordered=False)
                     chunk_size = len(documents)
                     processed_rows += chunk_size
-                    elapsed = time.perf_counter() - start_time
-                    rows_per_second = processed_rows / elapsed if elapsed > 0 else 0
-
-                    if is_csv_path:
-                        self.logger.info(
-                            f"Chunk {chunk_idx}: Processed {chunk_size} rows "
-                            f"(total: {processed_rows}) ({rows_per_second:.1f} rows/sec)"
-                        )
-                    else:
-                        chunk_start = start_idx + 1
-                        chunk_end = start_idx + chunk_size
-                        total_chunks = (total_rows + chunk_size - 1) // chunk_size
-                        self.logger.info(
-                            f"Chunk {chunk_idx}/{total_chunks}: "
-                            f"Onboarded rows {chunk_start}-{chunk_end} "
-                            f"({rows_per_second:.1f} rows/sec)"
-                        )
                 except Exception as e:
                     self.logger.error(f"Error inserting batch {chunk_idx}: {str(e)}")
                     if "duplicate key" not in str(e).lower():

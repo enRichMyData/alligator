@@ -82,8 +82,8 @@ class WorkerManager(DatabaseAccessMixin):
         row_processor = RowBatchProcessor(
             dataset_name,
             table_name,
-            feature,
             candidate_fetcher,
+            feature if not self.config.data.candidate_retrieval_only else None,
             object_fetcher,
             literal_fetcher,
             self.config.retrieval.max_candidates_in_result,

@@ -24,8 +24,8 @@ class RowBatchProcessor(DatabaseAccessMixin):
         self,
         dataset_name: str,
         table_name: str,
-        feature: Feature,
         candidate_fetcher: CandidateFetcher,
+        feature: Feature | None = None,
         object_fetcher: ObjectFetcher | None = None,
         literal_fetcher: LiteralFetcher | None = None,
         max_candidates_in_result: int = 5,
@@ -35,8 +35,8 @@ class RowBatchProcessor(DatabaseAccessMixin):
     ):
         self.dataset_name = dataset_name
         self.table_name = table_name
-        self.feature = feature
         self.candidate_fetcher = candidate_fetcher
+        self.feature = feature
         self.object_fetcher = object_fetcher
         self.literal_fetcher = literal_fetcher
         self.max_candidates_in_result = max_candidates_in_result
@@ -203,7 +203,7 @@ class RowBatchProcessor(DatabaseAccessMixin):
             for candidate in candidates_list:
                 candidate_dict: Dict[str, Any] = {"features": {}}
                 for key, value in candidate.items():
-                    if key in self.feature.selected_features:
+                    if self.feature is not None and key in self.feature.selected_features:
                         candidate_dict["features"][key] = value
                     else:
                         candidate_dict[key] = value
@@ -291,7 +291,8 @@ class RowBatchProcessor(DatabaseAccessMixin):
         """Process entities by computing features. Feature computation
         is done in-place over the candidates."""
 
-        self.feature.process_candidates(candidates, row_value)
+        if self.feature is not None:
+            self.feature.process_candidates(candidates, row_value)
 
     async def _enhance_with_lamapi_features(
         self,
@@ -310,10 +311,10 @@ class RowBatchProcessor(DatabaseAccessMixin):
         if self.literal_fetcher:
             literals_data = await self.literal_fetcher.fetch_literals(list(entity_ids))
 
-        if objects_data is not None:
+        if objects_data is not None and self.feature is not None:
             self.feature.compute_entity_entity_relationships(candidates_by_col, objects_data)
 
-        if literals_data is not None:
+        if literals_data is not None and self.feature is not None:
             self.feature.compute_entity_literal_relationships(
                 candidates_by_col, row_data.lit_columns, row_data.row, literals_data
             )

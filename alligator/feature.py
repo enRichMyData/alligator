@@ -10,9 +10,9 @@ from alligator.utils import (
     ColumnHelper,
     clean_str,
     compute_similarity_between_dates,
+    compute_similarity_between_numbers,
     compute_similarity_between_string,
     compute_similarity_between_string_token_based,
-    compute_similarty_between_numbers,
 )
 
 DEFAULT_FEATURES = [
@@ -433,7 +433,9 @@ class Feature(DatabaseAccessMixin):
                             # Calculate similarity based on datatype
                             p_subj_lit = 0.0
                             if lit_type == "NUMBER":
-                                p_subj_lit = compute_similarty_between_numbers(lit_value, kg_value)
+                                p_subj_lit = compute_similarity_between_numbers(
+                                    lit_value, kg_value
+                                )
                             elif normalized_datatype == "DATETIME":
                                 p_subj_lit = compute_similarity_between_dates(lit_value, kg_value)
                             elif normalized_datatype == "STRING":

@@ -164,7 +164,7 @@ def _my_abs(value1, value2):
 
 
 @lru_cache(maxsize=10000)
-def compute_similarty_between_numbers(value1: str, value2: str) -> float:
+def compute_similarity_between_numbers(value1: str, value2: str) -> float:
     try:
         value1_float = float(value1)
         value2_float = float(value2)

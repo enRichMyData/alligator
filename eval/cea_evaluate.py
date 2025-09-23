@@ -37,8 +37,16 @@ def main(args: argparse.Namespace):
                     "entity": winning_entity,
                 }
             )
+    gt = pd.read_csv(
+        args.ground_truth,
+        delimiter=",",
+        names=["tab_id", "row_id", "col_id", "entity"],
+        dtype={"tab_id": str, "row_id": str, "col_id": str, "entity": str},
+        keep_default_na=False,
+    )
+    min_row_is_one = gt["row_id"].astype(int).min() == 1
     cea_df = pd.DataFrame(cea_results)
-    if cea_df["row_id"].astype(int).min() == 0:
+    if cea_df["row_id"].astype(int).min() == 0 and min_row_is_one:
         cea_df["row_id"] = (cea_df["row_id"].astype(int) + 1).astype(str)
     os.makedirs("./results", exist_ok=True)
     cea_df.to_csv(f"./results/{args.dataset_name}_cea_results.csv", index=False)
@@ -57,12 +65,12 @@ def main(args: argparse.Namespace):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run and evaluate the Alligator.")
-    parser.add_argument("--dataset_name", type=str, default="htr1-correct-qids")
+    parser.add_argument("--dataset_name", type=str, default="test-sn-10-correct-qids-lamapi-unimib")
     parser.add_argument(
         "--ground_truth",
         type=str,
         default=os.path.join(
-            PROJECT_ROOT, "eval", "tables", "HardTablesR1", "Valid", "gt", "cea_gt.csv"
+            PROJECT_ROOT, "eval", "tables", "companies", "SN", "SN_gt_wd.csv"
         ),
     )
     parser.add_argument(

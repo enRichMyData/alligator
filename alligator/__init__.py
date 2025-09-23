@@ -9,13 +9,13 @@ from dotenv import load_dotenv
 from nltk.corpus import stopwords
 
 # Load environment variables from .env file
-load_dotenv()
+load_dotenv(override=True)
 
 TIMEOUT = aiohttp.ClientTimeout(
-    total=30,  # Total time for the request
-    connect=5,  # Time to connect to the server
-    sock_connect=5,  # Time to wait for a free socket
-    sock_read=25,  # Time to read response
+    total=120,  # Total time for the request
+    connect=64,  # Time to connect to the server
+    sock_connect=64,  # Time to wait for a free socket
+    sock_read=64,  # Time to read response
 )
 
 # Suppress certain Keras/TensorFlow warnings

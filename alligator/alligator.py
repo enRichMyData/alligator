@@ -40,7 +40,7 @@ class Alligator:
         column_types: Mapping[str, Union[str, List[str]]] | None = None,
         worker_batch_size: int = 16,
         num_workers: Optional[int] = 1,
-        max_candidates_in_result: int = 50,
+        max_candidates_in_result: int = 10,
         entity_retrieval_endpoint: Optional[str] = None,
         entity_retrieval_token: Optional[str] = None,
         object_retrieval_endpoint: Optional[str] = None,

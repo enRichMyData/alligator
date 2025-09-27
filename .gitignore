@@ -181,3 +181,8 @@ eval/results/
 **/launch.json
 **/settings.json
 **/.python-version
+
+
+tables/
+results/
+notebooks/

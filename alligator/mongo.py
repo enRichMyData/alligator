@@ -6,6 +6,7 @@ from pymongo import ASCENDING
 from pymongo.collection import Collection
 from pymongo.database import Database
 from pymongo.results import DeleteResult, InsertManyResult, InsertOneResult, UpdateResult
+from pymongo.errors import PyMongoError
 
 from alligator.database import DatabaseAccessMixin, DatabaseManager
 
@@ -28,21 +29,33 @@ class MongoCache(DatabaseAccessMixin):
         self._db_name: str = db_name
         self._collection_name = collection_name
 
-        # Create collection
-        db = self.get_db()
-        if collection_name not in db.list_collection_names():
-            if ttl_seconds is None:
-                db.create_collection(
-                    collection_name, capped=True, size=capped_size_bytes, max=capped_max_docs
-                )
-            else:
-                db.create_collection(collection_name, capped=False)
+        try:
+            db = self.get_db()
 
-        # Create indexes
-        collection = db[collection_name]
-        if ttl_seconds is not None:
-            collection.create_index("createdAt", expireAfterSeconds=ttl_seconds)
-        collection.create_index("key", unique=True)
+            # Create collection if needed
+            if collection_name not in db.list_collection_names():
+                if ttl_seconds is None:
+                    db.create_collection(
+                        collection_name,
+                        capped=True,
+                        size=capped_size_bytes,
+                        max=capped_max_docs,
+                    )
+                else:
+                    db.create_collection(collection_name, capped=False)
+
+            # Ensure indexes are present
+            collection = db[collection_name]
+            if ttl_seconds is not None:
+                collection.create_index("createdAt", expireAfterSeconds=ttl_seconds)
+            collection.create_index("key", unique=True)
+
+        except (RuntimeError, PyMongoError) as exc:
+            raise RuntimeError(
+                "Failed to initialize MongoDB cache collection. "
+                "Ensure the MongoDB server at "
+                f"{self._mongo_uri} is running and reachable."
+            ) from exc
 
     def get_collection(self) -> Collection:
         return self.get_db()[self._collection_name]

@@ -2,6 +2,7 @@ from typing import Dict
 
 from pymongo import MongoClient
 from pymongo.database import Database
+from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
 
 from alligator.log import get_logger
 
@@ -43,18 +44,32 @@ class DatabaseManager:
             MongoDB client with connection pooling configured
         """
         if uri not in cls._connections:
-            # Configure connection pool with sensible defaults
-            # These can be tuned based on your application needs
-            cls._connections[uri] = MongoClient(
-                uri,
-                maxPoolSize=50,  # Max connections in the pool
-                minPoolSize=10,  # Min connections to maintain
-                maxIdleTimeMS=30000,  # Close idle connections after 30s
-                socketTimeoutMS=30000,  # Socket timeout
-                connectTimeoutMS=5000,  # Connection timeout
-                retryWrites=True,  # Retry write operations
-                waitQueueTimeoutMS=2000,  # How long to wait for a connection
-            )
+            try:
+                client = MongoClient(
+                    uri,
+                    maxPoolSize=50,  # Max connections in the pool
+                    minPoolSize=10,  # Min connections to maintain
+                    maxIdleTimeMS=30000,  # Close idle connections after 30s
+                    socketTimeoutMS=30000,  # Socket timeout
+                    connectTimeoutMS=5000,  # Connection timeout
+                    serverSelectionTimeoutMS=5000,  # Server selection timeout
+                    retryWrites=True,  # Retry write operations
+                    waitQueueTimeoutMS=2000,  # How long to wait for a connection
+                )
+                client.admin.command("ping")
+            except (ServerSelectionTimeoutError, ConnectionFailure) as exc:
+                cls._logger.error(
+                    f"Unable to connect to MongoDB at {uri}. Ensure the server is running and reachable "
+                    "(for example, via `docker compose up -d gator-mongodb`)."
+                )
+                raise RuntimeError(
+                    f"Failed to connect to MongoDB at {uri}. Please make sure MongoDB is running and accessible."
+                ) from exc
+            except Exception as exc:
+                cls._logger.error(f"Unexpected error connecting to MongoDB at {uri}: {exc}")
+                raise
+            else:
+                cls._connections[uri] = client
         return cls._connections[uri]
 
     @classmethod

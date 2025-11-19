@@ -25,20 +25,3 @@ services:
     env_file:
       - .env  # Load environment variables from .env file
     restart: always  # Restart policy to always restart the container
-
-  gator-jupyter:
-    build: .
-    container_name: gator_jupyter
-    ports:
-      - "${JUPYTER_SERVER_PORT}:8888"
-    volumes:
-      - ./notebooks:/home/jovyan/work
-      - ./alligator:/home/jovyan/work/alligator
-      - ./tables:/home/jovyan/work/tables
-      - ./training/:/home/jovyan/work/training
-    command: start-notebook.sh --NotebookApp.token='' --NotebookApp.password=''
-    environment:
-      - JUPYTER_ENABLE_LAB=yes
-    env_file:
-      - .env  # Load environment variables from .env file
-    restart: always  # Restart policy to always restart the container

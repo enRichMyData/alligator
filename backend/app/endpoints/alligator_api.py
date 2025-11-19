@@ -55,6 +55,56 @@ def format_classification(raw_classification: dict, header: list) -> dict:
     return {"NE": ne, "LIT": lit, "IGNORED": ignored}
 
 
+# Auto-matching configuration
+MATCH_MIN_SCORE = 0.75
+MATCH_STRONG_SCORE = 0.92
+MATCH_GAP_THRESHOLD = 0.15
+MATCH_RATIO_THRESHOLD = 1.2
+
+
+def annotate_candidates_with_match(candidates: List[dict]) -> List[dict]:
+    """
+    Annotate candidates with a `match` flag.
+
+    The top candidate is marked as a match only when:
+    - It has a very high score (>= MATCH_STRONG_SCORE), or
+    - Its score is above MATCH_MIN_SCORE and it is clearly ahead of the second candidate,
+      both in absolute difference and relative ratio.
+    All other candidates are marked as non-matches.
+    """
+
+    if not candidates:
+        return []
+
+    def _score(value: Optional[float]) -> float:
+        try:
+            return float(value or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    top_score = _score(candidates[0].get("score"))
+    next_score = _score(candidates[1].get("score")) if len(candidates) > 1 else None
+
+    is_confident_match = False
+    if top_score >= MATCH_STRONG_SCORE:
+        is_confident_match = True
+    elif top_score >= MATCH_MIN_SCORE:
+        if next_score is None:
+            is_confident_match = True
+        else:
+            score_gap = top_score - next_score
+            ratio = top_score / max(next_score, 1e-6)
+            if score_gap >= MATCH_GAP_THRESHOLD and ratio >= MATCH_RATIO_THRESHOLD:
+                is_confident_match = True
+
+    annotated = []
+    for idx, cand in enumerate(candidates):
+        cand_copy = {**cand}
+        cand_copy["match"] = bool(is_confident_match and idx == 0)
+        annotated.append(cand_copy)
+    return annotated
+
+
 @router.post("/dataset/{datasetName}/table/json", status_code=status.HTTP_201_CREATED)
 def add_table(
     datasetName: str,
@@ -362,7 +412,10 @@ def get_table(
         for col_index in range(len(header)):
             candidates = el_results.get(str(col_index), [])
             if candidates:
-                linked_entities.append({"idColumn": col_index, "candidates": candidates})
+                annotated_candidates = annotate_candidates_with_match(candidates)
+                linked_entities.append(
+                    {"idColumn": col_index, "candidates": annotated_candidates}
+                )
 
         rows_formatted.append(
             {
